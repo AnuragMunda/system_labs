@@ -129,7 +129,7 @@ export function Canvas({
         snapToGrid
         snapGrid={SNAP_GRID}
         deleteKeyCode={null}
-        minZoom={0.2}
+        minZoom={0.5}
         maxZoom={2.5}
         fitView
         proOptions={{ hideAttribution: true }}
