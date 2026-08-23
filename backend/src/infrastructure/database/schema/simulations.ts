@@ -23,12 +23,12 @@ import { ArchitectureGraph, SimulationConfig } from "./types/types.js";
 
 /** The lifecycle states a simulation can be in, stored in the database. */
 export const simulationStatusEnum = pgEnum("simulation_status", [
-  "PENDING",
-  "RUNNING",
-  "PAUSED",
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
+  "created",
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "cancelled",
 ]);
 
 /** Simulations table. A simulation belongs to an architecture and records config + status. */
@@ -39,11 +39,18 @@ export const simulationsTable = pgTable(
     architectureId: uuid("architecture_id")
       .notNull()
       .references(() => architecturesTable.id, { onDelete: "cascade" }),
-    status: simulationStatusEnum("status").notNull().default("PENDING"),
+    status: simulationStatusEnum("status").notNull().default("created"),
+
+    // Seed used by the deterministic PRNG driving this run.
+    seed: integer("seed"),
+    // Simulation-time cursor (ms since start) reflecting engine progress.
+    currentTimeMs: integer("current_time_ms").notNull().default(0),
+
     config: jsonb("config").$type<SimulationConfig>(),
     snapshot: jsonb("snapshot").$type<ArchitectureGraph>(),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("simulations_architecture_id_idx").on(table.architectureId),
@@ -79,11 +86,16 @@ export const metricsTable = pgTable(
       .notNull()
       .references(() => simulationsTable.id, { onDelete: "cascade" }),
     timestampMs: integer("timestamp_ms").notNull(),
-    requestsPerSec: real("requests_per_sec").notNull(),
-    avgLatencyMs: real("avg_latency_ms").notNull(),
-    errorRate: real("error_rate").notNull(),
-    queueDepth: integer("queue_depth").notNull(),
-    cacheHitRate: real("cache_hit_rate").notNull(),
+
+    // Set when the sample is scoped to a single node; null for global samples.
+    nodeId: varchar("node_id"),
+
+    requestsPerSec: real("requests_per_sec"),
+    avgLatencyMs: real("avg_latency_ms"),
+    errorRate: real("error_rate"),
+    queueDepth: integer("queue_depth"),
+    cacheHitRate: real("cache_hit_rate"),
+    activeConnections: integer("active_connections"),
   },
   (table) => [
     index("metrics_simulation_timestamp_idx").on(

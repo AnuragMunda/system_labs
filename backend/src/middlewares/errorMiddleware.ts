@@ -10,6 +10,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { HttpStatus, ApiMessages } from "@/config/constants/index.js";
 import { ApiError } from "@/lib/index.js";
+import { logger } from "@/lib/logger.js";
 
 export const errorMiddleware = (
   err: unknown,
@@ -27,7 +28,13 @@ export const errorMiddleware = (
     code = err.code;
   }
 
-  console.error("ERROR:", err);
+  // Expected client errors (4xx) are logged as warnings; anything else is a
+  // server-side failure and logged with the full error for debugging.
+  if (err instanceof ApiError && statusCode < 500) {
+    logger.warn({ statusCode, code, msg: message }, "Handled API error");
+  } else {
+    logger.error(err, "Unhandled error");
+  }
 
   res.status(statusCode).json({
     success: false,

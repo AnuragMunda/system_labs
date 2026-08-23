@@ -8,42 +8,13 @@
 import { ArchitectureNode } from "@/domain/architecture/component.types.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 
+export type { SimulationConfig } from "@/domain/simulation/simulation.types.js";
+
 /** JSONB shape of an architecture's graph: its nodes and edges. */
 export interface ArchitectureGraph {
   // Nodes and edges of the architecture graph.
   nodes: ArchitectureNode[];
   edges: ArchitectureEdge[];
-}
-
-/** JSONB shape of a simulation's configuration, governing how load is generated. */
-export interface SimulationConfig {
-  // Total simulation duration.
-  durationSeconds: number;
-
-  // Initial requests generated per second.
-  requestsPerSecond: number;
-
-  /**
-   * Simulation playback speed.
-   * 1 = real-time
-   * 2 = 2x
-   * 5 = 5x
-   */
-  simulationSpeed: number;
-
-  // Random seed for deterministic simulations.
-  // Same architecture + config + seed => same result.
-  randomSeed?: number;
-
-  // Maximum number of events processed in one simulation tick.
-  // Prevents runaway simulations.
-  maxEventsPerTick?: number;
-
-  // Whether metrics should be collected.
-  collectMetrics: boolean;
-
-  // Emit simulation events for replay and visualization.
-  emitEvents: boolean;
 }
 
 //------------- Scenario Events -------------//

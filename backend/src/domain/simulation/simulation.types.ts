@@ -14,9 +14,33 @@ export type SimulationStatus =
 
 /** Configuration controlling how a simulation generates and plays back load. */
 export interface SimulationConfig {
+  // Total simulation duration.
   durationMs: number;
+
+  // Initial requests generated per second.
   requestsPerSecond: number;
+
+  /**
+   * Simulation playback speed.
+   * 1 = real-time
+   * 2 = 2x
+   * 5 = 5x
+   */
   simulationSpeed: number;
+
+  // Random seed for deterministic simulations.
+  // Same architecture + config + seed => same result.
+  randomSeed?: number;
+
+  // Maximum number of events processed in one simulation tick.
+  // Prevents runaway simulations.
+  maxEventsPerTick?: number;
+
+  // Whether metrics should be collected.
+  collectMetrics: boolean;
+
+  // Emit simulation events for replay and visualization.
+  emitEvents: boolean;
 }
 
 /**
