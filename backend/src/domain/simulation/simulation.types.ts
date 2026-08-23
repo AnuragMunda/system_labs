@@ -6,13 +6,15 @@
  * how the load is generated.
  */
 
+import { ArchitectureGraph } from "../architecture/architecture.types.js";
+
 /** The lifecycle states a simulation can move through. */
 export type SimulationStatus =
-  "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
+  "created" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
 /** Configuration controlling how a simulation generates and plays back load. */
 export interface SimulationConfig {
-  durationSeconds: number;
+  durationMs: number;
   requestsPerSecond: number;
   simulationSpeed: number;
 }
@@ -28,6 +30,10 @@ export interface Simulation {
   status: SimulationStatus;
   config: SimulationConfig;
 
-  startedAt?: Date;
-  completedAt?: Date;
+  currentTimeMs: number;
+  seed: number;
+
+  architectureSnapshot: ArchitectureGraph;
+
+  createdAt: Date;
 }

@@ -15,11 +15,13 @@ export interface Architecture {
   name: string;
   description?: string | null;
 
-  graph: {
-    nodes: ArchitectureNode[];
-    edges: ArchitectureEdge[];
-  };
+  graph: ArchitectureGraph;
 
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ArchitectureGraph {
+  nodes: ArchitectureNode[];
+  edges: ArchitectureEdge[];
 }
