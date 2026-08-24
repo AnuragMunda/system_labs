@@ -2,36 +2,50 @@
  * @file event-queue.ts
  *
  * @description A min-heap priority queue for simulation events, ordered by
- * timestamp. The simulation engine pops events in chronological order from
- * this queue as the simulation clock advances.
+ * timestamp with ties broken by insertion sequence. The simulation engine pops
+ * events in chronological order from this queue as the simulation clock
+ * advances; same-timestamp events are dequeued in the order they were enqueued.
  */
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 
+/** Internal wrapper pairing an event with its insertion sequence number. */
+interface QueuedEvent {
+  event: SimulationEvent;
+  sequence: number;
+}
+
 /**
  * Binary min-heap backed by an array, ordering `SimulationEvent`s by their
- * `timestampMs`. Enqueue and dequeue are O(log n); peek is O(1).
+ * `timestampMs`, then by an insertion sequence so equal-timestamp events keep
+ * FIFO order. Enqueue and dequeue are O(log n); peek is O(1).
  */
 export class EventQueue {
-  private events: SimulationEvent[] = [];
+  private events: QueuedEvent[] = [];
+  private nextSequence = 0;
 
-  /** Appends an event to the heap and sifts it up to restore heap order. */
+  /** Wraps the event with the next sequence number and sifts it into place. */
   enqueue(event: SimulationEvent): void {
-    this.events.push(event);
+    const queuedEvent: QueuedEvent = {
+      event,
+      sequence: this.nextSequence++,
+    };
+
+    this.events.push(queuedEvent);
     this.bubbleUp(this.events.length - 1);
   }
 
   /** Removes and returns the earliest event, or undefined when empty. */
   dequeue(): SimulationEvent | undefined {
-    if (this.isEmpty()) {
+    if (this.events.length === 0) {
       return undefined;
     }
 
     if (this.events.length === 1) {
-      return this.events.pop();
+      return this.events.pop()!.event;
     }
 
-    const firstEvent = this.events[0];
+    const firstEvent = this.events[0]!;
 
     // Move the last element to the root, then sift it down so the next
     // earliest event rises to the top.
@@ -41,12 +55,12 @@ export class EventQueue {
     this.events[0] = lastEvent;
     this.bubbleDown(0);
 
-    return firstEvent;
+    return firstEvent.event;
   }
 
   /** Returns the earliest event without removing it, or undefined when empty. */
   peek(): SimulationEvent | undefined {
-    return this.events[0];
+    return this.events[0]?.event;
   }
 
   /** Returns true when the queue holds no events. */
@@ -59,9 +73,10 @@ export class EventQueue {
     return this.events.length;
   }
 
-  /** Discards all queued events. */
+  /** Discards all queued events and resets the sequence counter. */
   clear(): void {
     this.events = [];
+    this.nextSequence = 0;
   }
 
   /** Sifts the event at `index` up while it is smaller than its parent. */
@@ -72,7 +87,10 @@ export class EventQueue {
       const parentIndex = Math.floor((currentIndex - 1) / 2);
 
       if (
-        this.compare(this.events[currentIndex]!, this.events[parentIndex]!) >= 0
+        this.compare(
+          this.events[currentIndex]!,
+          this.events[parentIndex]!,
+        ) >= 0
       ) {
         break;
       }
@@ -124,15 +142,26 @@ export class EventQueue {
     }
   }
 
-  /** Orders events by timestamp; negative when `a` precedes `b`. */
-  private compare(a: SimulationEvent, b: SimulationEvent): number {
-    return a.timestampMs - b.timestampMs;
+  /**
+   * Orders events by timestamp first; equal timestamps fall back to the
+   * insertion sequence so ordering stays deterministic and stable.
+   */
+  private compare(a: QueuedEvent, b: QueuedEvent): number {
+    const timestampDifference =
+      a.event.timestampMs - b.event.timestampMs;
+
+    if (timestampDifference !== 0) {
+      return timestampDifference;
+    }
+
+    return a.sequence - b.sequence;
   }
 
   /** Swaps the events at positions `a` and `b`. */
   private swap(a: number, b: number): void {
-    const event = this.events[a]!;
-    this.events[a] = this.events[b]!;
-    this.events[b] = event;
+    [this.events[a], this.events[b]] = [
+      this.events[b]!,
+      this.events[a]!,
+    ];
   }
 }

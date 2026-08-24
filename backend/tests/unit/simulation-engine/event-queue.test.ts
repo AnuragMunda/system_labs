@@ -101,4 +101,61 @@ describe("EventQueue", () => {
 
     expect(result).toEqual([1, 10, 20, 50, 100, 250, 300, 500, 700, 900]);
   });
+
+  it("should return same-timestamp events in insertion order", () => {
+    const queue = new EventQueue();
+
+    const event1 = createEvent("event-1", 100);
+    const event2 = createEvent("event-2", 100);
+    const event3 = createEvent("event-3", 100);
+
+    queue.enqueue(event3);
+    queue.enqueue(event1);
+    queue.enqueue(event2);
+
+    expect(queue.dequeue()?.id).toBe("event-3");
+    expect(queue.dequeue()?.id).toBe("event-1");
+    expect(queue.dequeue()?.id).toBe("event-2");
+  });
+
+  it("should break timestamp ties without overriding timestamp ordering", () => {
+    const queue = new EventQueue();
+
+    const timestamps = [10, 20, 10, 20, 10];
+
+    timestamps.forEach((timestamp, index) => {
+      queue.enqueue(createEvent(`event-${index}`, timestamp));
+    });
+
+    const result = [];
+
+    while (!queue.isEmpty()) {
+      result.push(queue.dequeue()!.id);
+    }
+
+    // Same-timestamp groups keep insertion order; earlier timestamps still
+    // come first.
+    expect(result).toEqual([
+      "event-0",
+      "event-2",
+      "event-4",
+      "event-1",
+      "event-3",
+    ]);
+  });
+
+  it("should reset the sequence counter when cleared", () => {
+    const queue = new EventQueue();
+
+    queue.enqueue(createEvent("before-clear-1", 100));
+    queue.enqueue(createEvent("before-clear-2", 100));
+
+    queue.clear();
+
+    queue.enqueue(createEvent("after-clear-1", 100));
+    queue.enqueue(createEvent("after-clear-2", 100));
+
+    expect(queue.dequeue()?.id).toBe("after-clear-1");
+    expect(queue.dequeue()?.id).toBe("after-clear-2");
+  });
 });
