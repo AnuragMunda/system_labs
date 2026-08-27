@@ -1,64 +1,49 @@
 /**
  * @file simulation-engine.ts
  *
- * @description The discrete-event simulation core. Pops events from the
- * event queue in timestamp order, advances the virtual clock to each event's
- * timestamp, and delegates processing to an injected event handler.
+ * @description The simulation orchestrator. It drives a `SimulationRuntime`'s
+ * event queue and clock to execute a simulation, but owns no state of its own
+ * and knows nothing about what events mean — event semantics are the injected
+ * processor's responsibility.
  */
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
-import { EventQueue } from "./event-queue.js";
-import { SimulationClock } from "./simulation-clock.js";
 import { EventProcessor } from "../types.js";
+import { SimulationRuntime } from "../runtime/simulation-runtime.js";
 
 /**
- * Coordinates the clock, event queue, and an injected processor to run a
- * deterministic discrete-event simulation. The engine knows nothing about
- * what events mean — that is entirely the processor's responsibility.
+ * Orchestrates how a simulation executes: it reads the runtime's state (its
+ * event queue and clock) to run each event, answering "how do I execute the
+ * simulation?" while leaving "what state does it currently have?" to the
+ * runtime. The engine stays agnostic of event semantics.
  */
 export class SimulationEngine {
   constructor(
-    private readonly clock: SimulationClock,
-    private readonly eventQueue: EventQueue,
+    private readonly runtime: SimulationRuntime,
     private readonly processEvent: EventProcessor,
   ) {}
 
-  /** Queues an event for future processing by the engine. */
+  /** Queues an event onto the runtime for future processing. */
   schedule(event: SimulationEvent): void {
-    this.eventQueue.enqueue(event);
+    this.runtime.schedule(event);
   }
 
   /**
-   * Drains the event queue: advances the clock to each event's timestamp and
-   * invokes the processor, returning once every scheduled event has run.
+   * Drains the runtime's event queue: advances the clock to each event's
+   * timestamp and invokes the processor, returning once every scheduled event
+   * has run.
    */
   run(): void {
-    while (!this.eventQueue.isEmpty()) {
-      const event = this.eventQueue.dequeue();
+    while (!this.runtime.eventQueue.isEmpty()) {
+      const event = this.runtime.eventQueue.dequeue();
 
       if (!event) {
         break;
       }
 
-      this.clock.advanceTo(event.timestampMs);
+      this.runtime.clock.advanceTo(event.timestampMs);
 
       this.processEvent(event);
     }
-  }
-
-  /** Returns the current virtual simulation time in milliseconds. */
-  getCurrentTime(): number {
-    return this.clock.now();
-  }
-
-  /** Returns true while events remain queued but unprocessed. */
-  hasPendingEvents(): boolean {
-    return !this.eventQueue.isEmpty();
-  }
-
-  /** Rewinds the clock to zero and discards queued events for a fresh run. */
-  reset(): void {
-    this.clock.reset();
-    this.eventQueue.clear();
   }
 }
