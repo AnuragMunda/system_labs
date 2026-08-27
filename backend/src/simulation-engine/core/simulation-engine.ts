@@ -9,7 +9,7 @@
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { EventProcessor } from "../types.js";
-import { SimulationRuntime } from "../runtime/simulation-runtime.js";
+import { SimulationRuntime } from "./simulation-runtime.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its

@@ -8,8 +8,8 @@
  */
 
 import { Simulation } from "@/domain/simulation/simulation.types.js";
-import { SimulationClock } from "../core/simulation-clock.js";
-import { EventQueue } from "../core/event-queue.js";
+import { SimulationClock } from "./simulation-clock.js";
+import { EventQueue } from "./event-queue.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 
 /**
