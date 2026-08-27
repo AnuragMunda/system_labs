@@ -20,7 +20,7 @@ import { SimulationRuntime } from "./simulation-runtime.js";
 export class SimulationEngine {
   constructor(
     private readonly runtime: SimulationRuntime,
-    private readonly processEvent: EventProcessor,
+    private readonly eventProcessor: EventProcessor,
   ) {}
 
   /** Queues an event onto the runtime for future processing. */
@@ -43,7 +43,7 @@ export class SimulationEngine {
 
       this.runtime.clock.advanceTo(event.timestampMs);
 
-      this.processEvent(event);
+      this.eventProcessor.process(event);
     }
   }
 }

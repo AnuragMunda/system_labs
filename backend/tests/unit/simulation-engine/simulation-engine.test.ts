@@ -1,5 +1,5 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
-import { SimulationRuntime } from "@/simulation-engine/runtime/simulation-runtime.js";
+import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { describe, expect, it, vi } from "vitest";
@@ -35,10 +35,10 @@ function createSimulation(): Simulation {
 function createFixture() {
   const simulation = createSimulation();
   const runtime = new SimulationRuntime(simulation);
-  const processEvent = vi.fn();
-  const engine = new SimulationEngine(runtime, processEvent);
+  const eventProcessor = { process: vi.fn() };
+  const engine = new SimulationEngine(runtime, eventProcessor);
 
-  return { simulation, runtime, engine, processEvent };
+  return { simulation, runtime, engine, eventProcessor };
 }
 
 describe("SimulationRuntime", () => {
@@ -62,18 +62,18 @@ describe("SimulationRuntime", () => {
 
 describe("SimulationEngine", () => {
   it("should advance the runtime clock to a single event's timestamp", () => {
-    const { runtime, engine, processEvent } = createFixture();
+    const { runtime, engine, eventProcessor } = createFixture();
 
     engine.schedule(createEvent("event-a", 100));
 
     engine.run();
 
-    expect(processEvent).toHaveBeenCalledTimes(1);
+    expect(eventProcessor.process).toHaveBeenCalledTimes(1);
     expect(runtime.currentTimeMs).toBe(100);
   });
 
   it("should process unordered events in timestamp order and end at the latest", () => {
-    const { runtime, engine, processEvent } = createFixture();
+    const { runtime, engine, eventProcessor } = createFixture();
 
     engine.schedule(createEvent("event-a", 100));
     engine.schedule(createEvent("event-b", 20));
@@ -81,7 +81,7 @@ describe("SimulationEngine", () => {
 
     engine.run();
 
-    const processedTimes = processEvent.mock.calls.map(
+    const processedTimes = eventProcessor.process.mock.calls.map(
       ([event]) => event.timestampMs,
     );
 
@@ -90,7 +90,7 @@ describe("SimulationEngine", () => {
   });
 
   it("should process already-ordered events without reordering", () => {
-    const { runtime, engine, processEvent } = createFixture();
+    const { runtime, engine, eventProcessor } = createFixture();
 
     engine.schedule(createEvent("event-1", 10));
     engine.schedule(createEvent("event-2", 20));
@@ -98,7 +98,7 @@ describe("SimulationEngine", () => {
 
     engine.run();
 
-    const processedTimes = processEvent.mock.calls.map(
+    const processedTimes = eventProcessor.process.mock.calls.map(
       ([event]) => event.timestampMs,
     );
 
@@ -107,11 +107,11 @@ describe("SimulationEngine", () => {
   });
 
   it("should never move the clock backwards while processing events", () => {
-    const { runtime, engine, processEvent } = createFixture();
+    const { runtime, engine, eventProcessor } = createFixture();
 
     const processedTimes: number[] = [];
 
-    processEvent.mockImplementation(() => {
+    eventProcessor.process.mockImplementation(() => {
       processedTimes.push(runtime.currentTimeMs);
     });
 

@@ -11,6 +11,7 @@ import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationClock } from "./simulation-clock.js";
 import { EventQueue } from "./event-queue.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
+import { SimulationRequest } from "@/domain/simulation/request.types.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -19,13 +20,12 @@ import { SimulationEvent } from "@/domain/simulation/event.types.js";
  */
 export class SimulationRuntime {
   readonly simulation: Simulation;
-  readonly clock: SimulationClock;
-  readonly eventQueue: EventQueue;
+  readonly clock: SimulationClock = new SimulationClock();
+  readonly eventQueue: EventQueue = new EventQueue();
+  private readonly requests = new Map<string, SimulationRequest>();
 
   constructor(simulation: Simulation) {
     this.simulation = simulation;
-    this.clock = new SimulationClock();
-    this.eventQueue = new EventQueue();
   }
 
   /** Queues an event for future processing by the engine. */
@@ -42,5 +42,22 @@ export class SimulationRuntime {
   reset(): void {
     this.clock.reset();
     this.eventQueue.clear();
+  }
+
+  createRequest(request: SimulationRequest): void {
+    this.requests.set(request.id, request);
+  }
+
+  getRequest(id: string): SimulationRequest {
+    const request = this.requests.get(id);
+
+    if (!request) throw new Error(`Request not found ${id}`);
+
+    return request;
+  }
+
+  updateRequest(id: string, newData: Partial<SimulationRequest>): void {
+    const request = this.getRequest(id);
+    this.requests.set(id, { ...request, ...newData });
   }
 }
