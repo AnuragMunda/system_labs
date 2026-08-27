@@ -33,9 +33,7 @@ describe("SimulationEngine", () => {
 
     engine.run();
 
-    const processedIds = processEvent.mock.calls.map(
-      ([event]) => event.id,
-    );
+    const processedIds = processEvent.mock.calls.map(([event]) => event.id);
 
     expect(processedIds).toEqual(["event-b", "event-c", "event-a"]);
     expect(engine.getCurrentTime()).toBe(100);
@@ -59,9 +57,7 @@ describe("SimulationEngine", () => {
 
     engine.run();
 
-    const processedIds = processEvent.mock.calls.map(
-      ([event]) => event.id,
-    );
+    const processedIds = processEvent.mock.calls.map(([event]) => event.id);
 
     expect(processedIds).toEqual(["event-1", "event-2", "event-3"]);
     expect(engine.getCurrentTime()).toBe(30);
@@ -76,9 +72,7 @@ describe("SimulationEngine", () => {
 
     engine.run();
 
-    const processedIds = processEvent.mock.calls.map(
-      ([event]) => event.id,
-    );
+    const processedIds = processEvent.mock.calls.map(([event]) => event.id);
 
     expect(processedIds).toEqual(["event-2", "event-3", "event-1"]);
     expect(engine.getCurrentTime()).toBe(30);

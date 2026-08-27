@@ -87,10 +87,7 @@ export class EventQueue {
       const parentIndex = Math.floor((currentIndex - 1) / 2);
 
       if (
-        this.compare(
-          this.events[currentIndex]!,
-          this.events[parentIndex]!,
-        ) >= 0
+        this.compare(this.events[currentIndex]!, this.events[parentIndex]!) >= 0
       ) {
         break;
       }
@@ -147,8 +144,7 @@ export class EventQueue {
    * insertion sequence so ordering stays deterministic and stable.
    */
   private compare(a: QueuedEvent, b: QueuedEvent): number {
-    const timestampDifference =
-      a.event.timestampMs - b.event.timestampMs;
+    const timestampDifference = a.event.timestampMs - b.event.timestampMs;
 
     if (timestampDifference !== 0) {
       return timestampDifference;
@@ -159,9 +155,6 @@ export class EventQueue {
 
   /** Swaps the events at positions `a` and `b`. */
   private swap(a: number, b: number): void {
-    [this.events[a], this.events[b]] = [
-      this.events[b]!,
-      this.events[a]!,
-    ];
+    [this.events[a], this.events[b]] = [this.events[b]!, this.events[a]!];
   }
 }
