@@ -3,12 +3,44 @@ import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.j
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
-import { SimulationRequest } from "@/domain/simulation/request.types.js";
+import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { describe, expect, it } from "vitest";
 
-const targetNodeId = "api-1";
+function createGraph(): ArchitectureGraph {
+  return {
+    nodes: [
+      {
+        id: "client",
+        type: "client",
+        name: "Client",
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+      {
+        id: "api",
+        type: "api",
+        name: "API",
+        position: { x: 100, y: 0 },
+        config: {},
+      },
+      {
+        id: "database",
+        type: "database",
+        name: "Database",
+        position: { x: 200, y: 0 },
+        config: {},
+      },
+    ],
+    edges: [
+      { id: "edge-1", source: "client", target: "api", config: {} },
+      { id: "edge-2", source: "api", target: "database", config: {} },
+    ],
+  };
+}
 
-function createSimulation(): Simulation {
+function createSimulation(
+  graph: ArchitectureGraph = createGraph(),
+): Simulation {
   return {
     id: "simulation-1",
     architectureId: "architecture-1",
@@ -22,7 +54,7 @@ function createSimulation(): Simulation {
     },
     currentTimeMs: 0,
     seed: 42,
-    architectureSnapshot: { nodes: [], edges: [] },
+    architectureSnapshot: graph,
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 }
@@ -31,6 +63,8 @@ function createEvent(
   type: SimulationEvent["type"],
   timestampMs: number,
   requestId: string,
+  sourceNodeId: string,
+  targetNodeId?: string,
   id = "event-1",
 ): SimulationEvent {
   return {
@@ -38,87 +72,89 @@ function createEvent(
     simulationId: "simulation-1",
     timestampMs,
     type,
-    sourceNodeId: "source-1",
+    sourceNodeId,
     targetNodeId,
     payload: { requestId },
   };
 }
 
-function createRuntime() {
-  const runtime = new SimulationRuntime(createSimulation());
+function createRuntime(graph: ArchitectureGraph = createGraph()) {
+  const runtime = new SimulationRuntime(createSimulation(graph));
   const processor = new DefaultEventProcessor(runtime);
 
   return { runtime, processor };
 }
 
 describe("DefaultEventProcessor", () => {
-  it("should schedule a request.routed event 10ms after request.created", () => {
+  it("should create a pending request and schedule its first route on request.created", () => {
     const { runtime, processor } = createRuntime();
 
-    const event = createEvent("request.created", 100, "req-1");
+    const event = createEvent("request.created", 0, "req-1", "client");
 
     processor.process(event);
 
-    expect(runtime.eventQueue.size()).toBe(1);
     expect(runtime.currentTimeMs).toBe(0);
 
     const scheduled = runtime.eventQueue.dequeue();
 
     expect(scheduled?.type).toBe("request.routed");
-    expect(scheduled?.timestampMs).toBe(110);
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.sourceNodeId).toBe("client");
+    expect(scheduled?.targetNodeId).toBe("api");
     expect(scheduled?.payload?.requestId).toBe("req-1");
 
-    const createdRequest = runtime.getRequest("req-1");
+    const request = runtime.getRequest("req-1");
 
-    expect(createdRequest.status).toBe("pending");
-    expect(createdRequest.createdAtMs).toBe(100);
-    expect(createdRequest.currentNodeId).toBe("source-1");
+    expect(request.status).toBe("pending");
+    expect(request.createdAtMs).toBe(0);
+    expect(request.currentNodeId).toBe("client");
   });
 
-  it("should schedule a request.completed event 20ms after request.routed and mark the request in-flight", () => {
+  it("should move a request and schedule the next hop on request.routed", () => {
     const { runtime, processor } = createRuntime();
 
     runtime.createRequest({
       id: "req-1",
       status: "pending",
-      createdAtMs: 100,
+      createdAtMs: 0,
+      currentNodeId: "client",
     });
 
-    const event = createEvent("request.routed", 110, "req-1");
-
-    processor.process(event);
-
-    expect(runtime.eventQueue.size()).toBe(1);
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "client", "api"),
+    );
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    expect(scheduled?.type).toBe("request.completed");
-    expect(scheduled?.timestampMs).toBe(130);
-    expect(scheduled?.payload?.requestId).toBe("req-1");
+    expect(scheduled?.type).toBe("request.routed");
+    // Offset is relative to the current runtime clock, which has not advanced.
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.targetNodeId).toBe("database");
 
-    const inFlightRequest = runtime.getRequest("req-1");
+    const request = runtime.getRequest("req-1");
 
-    expect(inFlightRequest.status).toBe("in-flight");
-    expect(inFlightRequest.currentNodeId).toBe(targetNodeId);
+    expect(request.status).toBe("in-flight");
+    expect(request.currentNodeId).toBe("api");
   });
 
-  it("should mark the request completed when a request.completed event is processed", () => {
+  it("should mark a request completed on request.completed", () => {
     const { runtime, processor } = createRuntime();
 
     runtime.createRequest({
       id: "req-1",
       status: "in-flight",
-      createdAtMs: 110,
+      createdAtMs: 0,
+      currentNodeId: "database",
     });
 
-    const event = createEvent("request.completed", 130, "req-1");
+    processor.process(
+      createEvent("request.completed", 30, "req-1", "database", "database"),
+    );
 
-    processor.process(event);
+    const request = runtime.getRequest("req-1");
 
-    const completedRequest = runtime.getRequest("req-1");
-
-    expect(completedRequest.status).toBe("completed");
-    expect(completedRequest.completedAtMs).toBe(130);
+    expect(request.status).toBe("completed");
+    expect(request.completedAtMs).toBe(30);
   });
 
   it("should throw when a request.created event lacks a requestId", () => {
@@ -127,8 +163,9 @@ describe("DefaultEventProcessor", () => {
     const event: SimulationEvent = {
       id: "event-1",
       simulationId: "simulation-1",
-      timestampMs: 100,
+      timestampMs: 0,
       type: "request.created",
+      sourceNodeId: "client",
     };
 
     expect(() => processor.process(event)).toThrowError(
@@ -136,53 +173,120 @@ describe("DefaultEventProcessor", () => {
     );
   });
 
-  it("should throw when a request.routed event lacks a requestId", () => {
+  it("should throw when a request.created event lacks a sourceNodeId", () => {
     const { processor } = createRuntime();
 
     const event: SimulationEvent = {
       id: "event-1",
       simulationId: "simulation-1",
-      timestampMs: 100,
-      type: "request.routed",
+      timestampMs: 0,
+      type: "request.created",
+      payload: { requestId: "req-1" },
     };
 
     expect(() => processor.process(event)).toThrowError(
-      "request.routed event requires a requestId.",
+      "request.created event requires a sourceNodeId.",
+    );
+  });
+
+  it("should throw when a request.routed event lacks a targetNodeId", () => {
+    const { runtime, processor } = createRuntime();
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "client",
+    });
+
+    const event: SimulationEvent = {
+      id: "event-1",
+      simulationId: "simulation-1",
+      timestampMs: 10,
+      type: "request.routed",
+      sourceNodeId: "client",
+      payload: { requestId: "req-1" },
+    };
+
+    expect(() => processor.process(event)).toThrowError(
+      "request.routed event requires a targetNodeId.",
+    );
+  });
+
+  it("should throw when a node has multiple outgoing connections", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "client",
+          type: "client",
+          name: "Client",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+        {
+          id: "api-1",
+          type: "api",
+          name: "API 1",
+          position: { x: 100, y: 0 },
+          config: {},
+        },
+        {
+          id: "api-2",
+          type: "api",
+          name: "API 2",
+          position: { x: 100, y: 100 },
+          config: {},
+        },
+      ],
+      edges: [
+        { id: "edge-1", source: "client", target: "api-1", config: {} },
+        { id: "edge-2", source: "client", target: "api-2", config: {} },
+      ],
+    };
+
+    const { processor } = createRuntime(graph);
+
+    const event = createEvent("request.created", 0, "req-1", "client");
+
+    expect(() => processor.process(event)).toThrowError(
+      "Multiple outgoing connections from node client require a routing policy.",
     );
   });
 });
 
 describe("SimulationEngine with DefaultEventProcessor", () => {
-  it("should process the full request lifecycle chain in order", () => {
+  it("should route a request through Client → API → Database and complete it", () => {
     const runtime = new SimulationRuntime(createSimulation());
     const processor = new DefaultEventProcessor(runtime);
     const engine = new SimulationEngine(runtime, processor);
 
-    const processedTypes: SimulationEvent["type"][] = [];
+    const processed: { type: SimulationEvent["type"]; target?: string }[] = [];
 
     const originalProcess = processor.process.bind(processor);
     processor.process = (event) => {
-      processedTypes.push(event.type);
+      processed.push({ type: event.type, target: event.targetNodeId });
       originalProcess(event);
     };
 
-    engine.schedule(createEvent("request.created", 0, "req-1"));
+    engine.schedule(createEvent("request.created", 0, "req-1", "client"));
 
     engine.run();
 
-    expect(processedTypes).toEqual([
-      "request.created",
-      "request.routed",
-      "request.completed",
+    expect(processed).toEqual([
+      { type: "request.created", target: undefined },
+      { type: "request.routed", target: "api" },
+      { type: "request.routed", target: "database" },
+      { type: "request.completed", target: "database" },
     ]);
-    expect(runtime.currentTimeMs).toBe(30);
+
     expect(runtime.eventQueue.isEmpty()).toBe(true);
 
     const request = runtime.getRequest("req-1");
 
     expect(request.status).toBe("completed");
+    expect(request.currentNodeId).toBe("database");
     expect(request.createdAtMs).toBe(0);
     expect(request.completedAtMs).toBe(30);
-    expect(request).toMatchObject<Partial<SimulationRequest>>({ id: "req-1" });
+    expect(runtime.currentTimeMs).toBe(30);
   });
 });

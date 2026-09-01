@@ -12,6 +12,7 @@ import { SimulationClock } from "./simulation-clock.js";
 import { EventQueue } from "./event-queue.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
+import { ArchitectureTopology } from "../topology/architecture-topology.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -20,12 +21,15 @@ import { SimulationRequest } from "@/domain/simulation/request.types.js";
  */
 export class SimulationRuntime {
   readonly simulation: Simulation;
+  readonly topology: ArchitectureTopology;
   readonly clock: SimulationClock = new SimulationClock();
   readonly eventQueue: EventQueue = new EventQueue();
+
   private readonly requests = new Map<string, SimulationRequest>();
 
   constructor(simulation: Simulation) {
     this.simulation = simulation;
+    this.topology = new ArchitectureTopology(simulation.architectureSnapshot);
   }
 
   /** Queues an event for future processing by the engine. */
@@ -38,13 +42,10 @@ export class SimulationRuntime {
     return this.clock.now();
   }
 
-  /** Rewinds the clock to zero and discards queued events for a fresh run. */
-  reset(): void {
-    this.clock.reset();
-    this.eventQueue.clear();
-  }
-
   createRequest(request: SimulationRequest): void {
+    if (this.requests.has(request.id))
+      throw new Error(`Request already exists ${request.id}`);
+
     this.requests.set(request.id, request);
   }
 
@@ -59,5 +60,12 @@ export class SimulationRuntime {
   updateRequest(id: string, newData: Partial<SimulationRequest>): void {
     const request = this.getRequest(id);
     this.requests.set(id, { ...request, ...newData });
+  }
+
+  /** Rewinds the clock to zero and discards queued events for a fresh run. */
+  reset(): void {
+    this.clock.reset();
+    this.eventQueue.clear();
+    this.requests.clear();
   }
 }
