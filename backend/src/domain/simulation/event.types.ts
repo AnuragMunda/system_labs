@@ -10,6 +10,8 @@
 export type SimulationEventType =
   | "request.created"
   | "request.routed"
+  | "request.processing_started"
+  | "request.processing_completed"
   | "request.completed"
   | "request.failed"
   | "cache.hit"

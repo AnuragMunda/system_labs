@@ -75,5 +75,8 @@ interface ComponentConfig {
   timeoutMs?: number;
   retryPolicy?: RetryPolicy;
   traffic?: number; // Requests per second handled
-  health?: "healthy" | "degraded" | "critical";
+  health?: RuntimeComponentHealth;
 }
+
+export type RuntimeComponentHealth =
+  "healthy" | "degraded" | "critical" | "failed";

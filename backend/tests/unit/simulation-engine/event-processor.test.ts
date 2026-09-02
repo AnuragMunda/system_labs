@@ -4,7 +4,22 @@ import { DefaultEventProcessor } from "@/simulation-engine/processor/event-proce
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
+import { ArchitectureNode } from "@/domain/architecture/component.types.js";
 import { describe, expect, it } from "vitest";
+
+function node(
+  id: string,
+  type: ArchitectureNode["type"],
+  config: ArchitectureNode["config"] = {},
+): ArchitectureNode {
+  return {
+    id,
+    type,
+    name: id,
+    position: { x: 0, y: 0 },
+    config,
+  };
+}
 
 function createGraph(): ArchitectureGraph {
   return {
@@ -127,8 +142,8 @@ describe("DefaultEventProcessor", () => {
     const scheduled = runtime.eventQueue.dequeue();
 
     expect(scheduled?.type).toBe("request.routed");
-    // Offset is relative to the current runtime clock, which has not advanced.
-    expect(scheduled?.timestampMs).toBe(10);
+    // The next hop is offset 10ms from the routed event's own timestamp.
+    expect(scheduled?.timestampMs).toBe(20);
     expect(scheduled?.targetNodeId).toBe("database");
 
     const request = runtime.getRequest("req-1");
@@ -155,6 +170,120 @@ describe("DefaultEventProcessor", () => {
 
     expect(request.status).toBe("completed");
     expect(request.completedAtMs).toBe(30);
+  });
+
+  it("should schedule processing_completed after latency on a healthy component", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { latencyMs: 50 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.processing_completed");
+    expect(scheduled?.timestampMs).toBe(60);
+    expect(scheduled?.payload?.requestId).toBe("req-1");
+
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+  });
+
+  it("should fail a request when the component capacity is exceeded", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { capacity: 1 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.incrementActiveRequests("api");
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.failed");
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.payload?.reason).toBe("component_capacity_exceeded");
+
+    // The request was rejected, so the component's active count is unchanged.
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+  });
+
+  it("should fail a request when the component has failed", () => {
+    const { runtime, processor } = createRuntime();
+
+    runtime.updateComponent("api", { health: "failed" });
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.failed");
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.payload?.reason).toBe("component_failed");
+  });
+
+  it("should decrement active requests and complete a request at a terminal node", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("database", "database")],
+      edges: [{ id: "edge-1", source: "client", target: "database", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.incrementActiveRequests("database");
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "database",
+    });
+
+    processor.process(
+      createEvent("request.processing_completed", 30, "req-1", "database"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.completed");
+    expect(scheduled?.timestampMs).toBe(30);
+
+    const component = runtime.getComponent("database");
+
+    expect(component.activeRequests).toBe(0);
+    expect(component.processedRequests).toBe(1);
   });
 
   it("should throw when a request.created event lacks a requestId", () => {
@@ -276,7 +405,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       { type: "request.created", target: undefined },
       { type: "request.routed", target: "api" },
       { type: "request.routed", target: "database" },
-      { type: "request.completed", target: "database" },
+      { type: "request.completed", target: undefined },
     ]);
 
     expect(runtime.eventQueue.isEmpty()).toBe(true);
@@ -286,7 +415,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     expect(request.status).toBe("completed");
     expect(request.currentNodeId).toBe("database");
     expect(request.createdAtMs).toBe(0);
-    expect(request.completedAtMs).toBe(30);
-    expect(runtime.currentTimeMs).toBe(30);
+    expect(request.completedAtMs).toBe(20);
+    expect(runtime.currentTimeMs).toBe(20);
   });
 });
