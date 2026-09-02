@@ -257,7 +257,9 @@ describe("DefaultEventProcessor", () => {
   it("should decrement active requests and complete a request at a terminal node", () => {
     const graph: ArchitectureGraph = {
       nodes: [node("client", "client"), node("database", "database")],
-      edges: [{ id: "edge-1", source: "client", target: "database", config: {} }],
+      edges: [
+        { id: "edge-1", source: "client", target: "database", config: {} },
+      ],
     };
 
     const { runtime, processor } = createRuntime(graph);
