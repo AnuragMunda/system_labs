@@ -47,8 +47,18 @@ function createGraph(): ArchitectureGraph {
       },
     ],
     edges: [
-      { id: "edge-1", source: "client", target: "api", config: {} },
-      { id: "edge-2", source: "api", target: "database", config: {} },
+      {
+        id: "edge-1",
+        source: "client",
+        target: "api",
+        config: { latencyMs: 10 },
+      },
+      {
+        id: "edge-2",
+        source: "api",
+        target: "database",
+        config: { latencyMs: 10 },
+      },
     ],
   };
 }
@@ -150,6 +160,146 @@ describe("DefaultEventProcessor", () => {
 
     expect(request.status).toBe("in-flight");
     expect(request.currentNodeId).toBe("api");
+  });
+
+  it("should schedule the next hop using the edge latency on request.routed", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api"),
+        node("database", "database"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 25 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 5 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "client",
+    });
+
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "client", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.routed");
+    // The request arrives at api at 10ms; edge api->database latency is 5ms.
+    expect(scheduled?.timestampMs).toBe(15);
+    expect(scheduled?.targetNodeId).toBe("database");
+  });
+
+  it("should apply the default network latency when the edge has no latency", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api"),
+        node("database", "database"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 7 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: {},
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "client",
+    });
+
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "client", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    // Edge api->database has no latency configured, so the 10ms default applies.
+    expect(scheduled?.type).toBe("request.routed");
+    expect(scheduled?.timestampMs).toBe(20);
+    expect(scheduled?.targetNodeId).toBe("database");
+  });
+
+  it("should apply network latency after processing completes on the next hop", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 50 }),
+        node("database", "database"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 20 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 40 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.incrementActiveRequests("api");
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_completed", 30, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.routed");
+    // Processing completed at 30ms; edge api->database latency is 40ms.
+    expect(scheduled?.timestampMs).toBe(70);
+    expect(scheduled?.sourceNodeId).toBe("api");
+    expect(scheduled?.targetNodeId).toBe("database");
+
+    const component = runtime.getComponent("api");
+
+    expect(component.activeRequests).toBe(0);
+    expect(component.processedRequests).toBe(1);
   });
 
   it("should mark a request completed on request.completed", () => {

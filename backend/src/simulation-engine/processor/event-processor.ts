@@ -9,6 +9,7 @@
 import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { EventProcessor } from "../types.js";
+import { getNetworkLatency } from "../network/network-latency.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -166,6 +167,12 @@ export class DefaultEventProcessor implements EventProcessor {
   // request.processing_completed
   // ---------------------------------------------------------------------------
 
+  /**
+   * Finalizes processing on the current component and moves the request
+   * toward the next component. Routing is applied inline (rather than via
+   * routeRequest) so the network latency of the outgoing connection is
+   * accounted for, or the request is completed at a terminal component.
+   */
   private handleProcessingCompleted(event: SimulationEvent): void {
     const requestId = this.getRequestId(event);
 
@@ -179,7 +186,57 @@ export class DefaultEventProcessor implements EventProcessor {
 
     this.runtime.recordProcessedRequest(event.sourceNodeId);
 
-    this.routeRequest(requestId, event.simulationId, event.timestampMs);
+    const nextNodes = this.runtime.topology.getNextNodes(event.sourceNodeId);
+
+    // Terminal component — no connections to travel across, so complete.
+    if (nextNodes.length === 0) {
+      this.runtime.schedule({
+        id: crypto.randomUUID(),
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "request.completed",
+        sourceNodeId: event.sourceNodeId,
+        payload: {
+          requestId,
+        },
+      });
+
+      return;
+    }
+
+    // Multiple outgoing connections require a routing policy that doesn't
+    // exist yet.
+    if (nextNodes.length > 1) {
+      throw new Error(
+        `Multiple outgoing connections from node ${event.sourceNodeId} require a routing policy.`,
+      );
+    }
+
+    const nextNode = nextNodes[0];
+
+    if (!nextNode) {
+      throw new Error(
+        `Unable to determine next node for request ${requestId}.`,
+      );
+    }
+
+    // The request must travel across the connection, so its latency is added.
+    const networkLatencyMs = this.getConnectionLatencyMs(
+      event.sourceNodeId,
+      nextNode.id,
+    );
+
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs + networkLatencyMs,
+      type: "request.routed",
+      sourceNodeId: event.sourceNodeId,
+      targetNodeId: nextNode.id,
+      payload: {
+        requestId,
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -257,10 +314,16 @@ export class DefaultEventProcessor implements EventProcessor {
       );
     }
 
+    // The request travels across the connecting edge, so its latency applies.
+    const networkLatency = this.getConnectionLatencyMs(
+      request.currentNodeId,
+      nextNode.id,
+    );
+
     this.runtime.schedule({
       id: crypto.randomUUID(),
       simulationId,
-      timestampMs: timestampMs + 10,
+      timestampMs: timestampMs + networkLatency,
       type: "request.routed",
       sourceNodeId: request.currentNodeId,
       targetNodeId: nextNode.id,
@@ -281,5 +344,27 @@ export class DefaultEventProcessor implements EventProcessor {
     }
 
     return requestId;
+  }
+
+  /**
+   * Resolves the network latency for a hop between two components. Looks up
+   * the connecting edge in the topology and, when it is missing, throws so a
+   * malformed graph fails loudly rather than silently mis-routing.
+   */
+  private getConnectionLatencyMs(
+    sourceNodeId: string,
+    targetNodeId: string,
+  ): number {
+    const edge = this.runtime.topology.getEdge(sourceNodeId, targetNodeId);
+
+    if (!edge) {
+      throw new Error(
+        `No connection found from ${sourceNodeId} to ${targetNodeId}.`,
+      );
+    }
+
+    const networkLatencyMs = getNetworkLatency(edge);
+
+    return networkLatencyMs;
   }
 }

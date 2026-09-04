@@ -48,6 +48,22 @@ describe("ArchitectureTopology", () => {
     expect(topology.getNode("missing")).toBeUndefined();
   });
 
+  it("should return the edge connecting two nodes", () => {
+    const edge = topology.getEdge("client", "api");
+
+    expect(edge?.id).toBe("edge-1");
+    expect(edge?.source).toBe("client");
+    expect(edge?.target).toBe("api");
+  });
+
+  it("should return undefined when no edge connects the two nodes", () => {
+    expect(topology.getEdge("client", "database")).toBeUndefined();
+  });
+
+  it("should return undefined when the nodes are reversed", () => {
+    expect(topology.getEdge("api", "client")).toBeUndefined();
+  });
+
   it("should return the outgoing edges of a node", () => {
     const edges = topology.getOutgoingEdges("api");
 
