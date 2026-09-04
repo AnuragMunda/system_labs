@@ -5,7 +5,7 @@ import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { ArchitectureNode } from "@/domain/architecture/component.types.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 function node(
   id: string,
@@ -494,44 +494,255 @@ describe("DefaultEventProcessor", () => {
     );
   });
 
-  it("should throw when a node has multiple outgoing connections", () => {
+  it("should round-robin requests across multiple outgoing connections", () => {
     const graph: ArchitectureGraph = {
       nodes: [
-        {
-          id: "client",
-          type: "client",
-          name: "Client",
-          position: { x: 0, y: 0 },
-          config: {},
-        },
-        {
-          id: "api-1",
-          type: "api",
-          name: "API 1",
-          position: { x: 100, y: 0 },
-          config: {},
-        },
-        {
-          id: "api-2",
-          type: "api",
-          name: "API 2",
-          position: { x: 100, y: 100 },
-          config: {},
-        },
+        node("gateway", "load_balancer"),
+        node("api-1", "api"),
+        node("api-2", "api"),
       ],
       edges: [
-        { id: "edge-1", source: "client", target: "api-1", config: {} },
-        { id: "edge-2", source: "client", target: "api-2", config: {} },
+        {
+          id: "edge-1",
+          source: "gateway",
+          target: "api-1",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "edge-2",
+          source: "gateway",
+          target: "api-2",
+          config: { latencyMs: 0 },
+        },
       ],
     };
 
-    const { processor } = createRuntime(graph);
+    const { runtime, processor } = createRuntime(graph);
 
-    const event = createEvent("request.created", 0, "req-1", "client");
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "gateway",
+    });
+    runtime.createRequest({
+      id: "req-2",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "gateway",
+    });
 
-    expect(() => processor.process(event)).toThrowError(
-      "Multiple outgoing connections from node client require a routing policy.",
+    // Route two requests from the gateway; each should take the next edge in
+    // round-robin order without a routing policy failure.
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "gateway", "gateway"),
     );
+    processor.process(
+      createEvent("request.routed", 10, "req-2", "gateway", "gateway"),
+    );
+
+    const first = runtime.eventQueue.dequeue();
+
+    expect(first?.type).toBe("request.routed");
+    expect(first?.targetNodeId).toBe("api-1");
+    expect(first?.timestampMs).toBe(10);
+
+    const second = runtime.eventQueue.dequeue();
+
+    expect(second?.type).toBe("request.routed");
+    expect(second?.targetNodeId).toBe("api-2");
+    expect(second?.timestampMs).toBe(10);
+  });
+
+  it("should keep separate routing state for different source nodes", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("gateway", "load_balancer"),
+        node("queue", "queue"),
+        node("api-1", "api"),
+        node("api-2", "api"),
+        node("api-3", "api"),
+        node("worker-1", "worker"),
+        node("worker-2", "worker"),
+        node("worker-3", "worker"),
+      ],
+      edges: [
+        {
+          id: "g-1",
+          source: "gateway",
+          target: "api-1",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "g-2",
+          source: "gateway",
+          target: "api-2",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "g-3",
+          source: "gateway",
+          target: "api-3",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "q-1",
+          source: "queue",
+          target: "worker-1",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "q-2",
+          source: "queue",
+          target: "worker-2",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "q-3",
+          source: "queue",
+          target: "worker-3",
+          config: { latencyMs: 0 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "gateway",
+    });
+    runtime.createRequest({
+      id: "req-2",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "queue",
+    });
+
+    // Gateway routes its first request, then queue routes its first. Their
+    // counters must advance independently and not interfere.
+    processor.process(
+      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
+    );
+    processor.process(
+      createEvent("request.routed", 0, "req-2", "queue", "queue"),
+    );
+
+    expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("api-1");
+    expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("worker-1");
+
+    // Second round: gateway still advances its own position to api-2 while
+    // queue stays on its own worker-2.
+    processor.process(
+      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
+    );
+    processor.process(
+      createEvent("request.routed", 0, "req-2", "queue", "queue"),
+    );
+
+    expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("api-2");
+    expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("worker-2");
+  });
+
+  it("should apply each edge's latency when round-robin routing", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("gateway", "load_balancer"),
+        node("api-1", "api"),
+        node("api-2", "api"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "gateway",
+          target: "api-1",
+          config: { latencyMs: 5 },
+        },
+        {
+          id: "edge-2",
+          source: "gateway",
+          target: "api-2",
+          config: { latencyMs: 20 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    // Request 1 is routed from the gateway at T=0.
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "gateway",
+    });
+    processor.process(
+      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
+    );
+
+    const first = runtime.eventQueue.dequeue();
+
+    expect(first?.type).toBe("request.routed");
+    expect(first?.targetNodeId).toBe("api-1");
+    expect(first?.timestampMs).toBe(5);
+
+    // Request 2 takes the next edge, whose latency is higher.
+    runtime.createRequest({
+      id: "req-2",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "gateway",
+    });
+    processor.process(
+      createEvent("request.routed", 0, "req-2", "gateway", "gateway"),
+    );
+
+    const second = runtime.eventQueue.dequeue();
+
+    expect(second?.type).toBe("request.routed");
+    expect(second?.targetNodeId).toBe("api-2");
+    expect(second?.timestampMs).toBe(20);
+  });
+
+  it("should complete a request at a terminal node without invoking routing", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("api", "api"), node("database", "database")],
+      edges: [
+        {
+          id: "edge-1",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 5 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    const selectEdgeSpy = vi.spyOn(runtime.routingStrategy, "selectEdge");
+
+    // Route the request to the terminal database node.
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "api", "database"),
+    );
+
+    // The terminal node has no outgoing edges, so the request completes and
+    // the routing strategy must not be consulted.
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.completed");
+    expect(scheduled?.timestampMs).toBe(10);
+
+    expect(selectEdgeSpy).not.toHaveBeenCalled();
   });
 });
 

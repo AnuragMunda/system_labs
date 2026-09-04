@@ -14,6 +14,8 @@ import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
 import { ArchitectureTopology } from "../topology/architecture-topology.js";
 import { ComponentRuntimeState } from "../components/component-runtime-state.js";
+import { RoundRobinStrategy } from "../routing/round-robin-strategy.js";
+import type { RoutingStrategy } from "../routing/routing-strategy.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -25,12 +27,14 @@ export class SimulationRuntime {
   readonly topology: ArchitectureTopology;
   readonly clock: SimulationClock = new SimulationClock();
   readonly eventQueue: EventQueue = new EventQueue();
+  routingStrategy: RoutingStrategy = new RoundRobinStrategy();
 
   private readonly requests = new Map<string, SimulationRequest>();
   private readonly components = new Map<string, ComponentRuntimeState>();
 
   constructor(simulation: Simulation) {
     this.simulation = simulation;
+    this.routingStrategy = new RoundRobinStrategy();
 
     this.topology = new ArchitectureTopology(simulation.architectureSnapshot);
 
@@ -161,6 +165,8 @@ export class SimulationRuntime {
   reset(): void {
     this.clock.reset();
     this.eventQueue.clear();
+
+    this.routingStrategy = new RoundRobinStrategy();
 
     this.requests.clear();
     this.components.clear();

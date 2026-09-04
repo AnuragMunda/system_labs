@@ -63,7 +63,7 @@ export class DefaultEventProcessor implements EventProcessor {
       currentNodeId: event.sourceNodeId,
     });
 
-    this.routeRequest(requestId, event.simulationId, event.timestampMs);
+    this.routeRequest(event, event.sourceNodeId);
   }
 
   // ---------------------------------------------------------------------------
@@ -81,14 +81,12 @@ export class DefaultEventProcessor implements EventProcessor {
       throw new Error("request.routed event requires a targetNodeId.");
     }
 
-    const request = this.runtime.getRequest(requestId);
-
     this.runtime.updateRequest(requestId, {
       status: "in-flight",
       currentNodeId: event.targetNodeId,
     });
 
-    this.routeRequest(request.id, event.simulationId, event.timestampMs);
+    this.routeRequest(event, event.targetNodeId);
   }
 
   // ---------------------------------------------------------------------------
@@ -174,69 +172,21 @@ export class DefaultEventProcessor implements EventProcessor {
    * accounted for, or the request is completed at a terminal component.
    */
   private handleProcessingCompleted(event: SimulationEvent): void {
-    const requestId = this.getRequestId(event);
+    // Validates that the event carries a requestId.
+    this.getRequestId(event);
 
-    if (!event.sourceNodeId) {
+    const sourceNodeId = event.sourceNodeId;
+
+    if (!sourceNodeId) {
       throw new Error(
         "request.processing_completed event requires a sourceNodeId.",
       );
     }
 
-    this.runtime.decrementActiveRequests(event.sourceNodeId);
+    this.runtime.decrementActiveRequests(sourceNodeId);
+    this.runtime.recordProcessedRequest(sourceNodeId);
 
-    this.runtime.recordProcessedRequest(event.sourceNodeId);
-
-    const nextNodes = this.runtime.topology.getNextNodes(event.sourceNodeId);
-
-    // Terminal component — no connections to travel across, so complete.
-    if (nextNodes.length === 0) {
-      this.runtime.schedule({
-        id: crypto.randomUUID(),
-        simulationId: event.simulationId,
-        timestampMs: event.timestampMs,
-        type: "request.completed",
-        sourceNodeId: event.sourceNodeId,
-        payload: {
-          requestId,
-        },
-      });
-
-      return;
-    }
-
-    // Multiple outgoing connections require a routing policy that doesn't
-    // exist yet.
-    if (nextNodes.length > 1) {
-      throw new Error(
-        `Multiple outgoing connections from node ${event.sourceNodeId} require a routing policy.`,
-      );
-    }
-
-    const nextNode = nextNodes[0];
-
-    if (!nextNode) {
-      throw new Error(
-        `Unable to determine next node for request ${requestId}.`,
-      );
-    }
-
-    // The request must travel across the connection, so its latency is added.
-    const networkLatencyMs = this.getConnectionLatencyMs(
-      event.sourceNodeId,
-      nextNode.id,
-    );
-
-    this.runtime.schedule({
-      id: crypto.randomUUID(),
-      simulationId: event.simulationId,
-      timestampMs: event.timestampMs + networkLatencyMs,
-      type: "request.routed",
-      sourceNodeId: event.sourceNodeId,
-      targetNodeId: nextNode.id,
-      payload: {
-        requestId,
-      },
-    });
+    this.routeRequest(event, sourceNodeId);
   }
 
   // ---------------------------------------------------------------------------
@@ -262,73 +212,50 @@ export class DefaultEventProcessor implements EventProcessor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Determines where a request should go next based on
-   * the architecture graph.
+   * Determines where a request should go next based on the outgoing
+   * connections of its current component.
    *
    * Routing rules for the current MVP:
    *
-   * 0 outgoing nodes → request.completed
-   * 1 outgoing node   → request.routed
-   * >1 outgoing nodes → throw
+   * 0 outgoing edges  → request.completed (no routing performed)
+   * >= 1 outgoing edge → select one via the runtime's routing strategy, then
+   *                      request.routed after that edge's network latency
    */
 
-  private routeRequest(
-    requestId: string,
-    simulationId: string,
-    timestampMs: number,
-  ): void {
-    const request = this.runtime.getRequest(requestId);
+  private routeRequest(event: SimulationEvent, sourceNodeId: string): void {
+    const edges = this.runtime.topology.getOutgoingEdges(sourceNodeId);
 
-    if (!request.currentNodeId) {
-      throw new Error(`Request ${requestId} has no currentNodeId.`);
-    }
-
-    const nextNodes = this.runtime.topology.getNextNodes(request.currentNodeId);
-
-    if (nextNodes.length === 0) {
+    if (edges.length === 0) {
       this.runtime.schedule({
         id: crypto.randomUUID(),
-        simulationId,
-        timestampMs,
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
         type: "request.completed",
-        sourceNodeId: request.currentNodeId,
+        sourceNodeId,
         payload: {
-          requestId,
+          requestId: this.getRequestId(event),
         },
       });
 
       return;
     }
 
-    if (nextNodes.length > 1) {
-      throw new Error(
-        `Multiple outgoing connections from node ${request.currentNodeId} require a routing policy.`,
-      );
-    }
+    const selectedEdge = this.runtime.routingStrategy.selectEdge(edges, {
+      sourceNodeId,
+      requestId: this.getRequestId(event),
+    });
 
-    const nextNode = nextNodes[0];
-
-    if (!nextNode) {
-      throw new Error(
-        `Unable to determine next node for request ${requestId}.`,
-      );
-    }
-
-    // The request travels across the connecting edge, so its latency applies.
-    const networkLatency = this.getConnectionLatencyMs(
-      request.currentNodeId,
-      nextNode.id,
-    );
+    const networkLatencyMs = getNetworkLatency(selectedEdge);
 
     this.runtime.schedule({
       id: crypto.randomUUID(),
-      simulationId,
-      timestampMs: timestampMs + networkLatency,
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs + networkLatencyMs,
       type: "request.routed",
-      sourceNodeId: request.currentNodeId,
-      targetNodeId: nextNode.id,
+      sourceNodeId: selectedEdge.source,
+      targetNodeId: selectedEdge.target,
       payload: {
-        requestId,
+        requestId: this.getRequestId(event),
       },
     });
   }
@@ -344,27 +271,5 @@ export class DefaultEventProcessor implements EventProcessor {
     }
 
     return requestId;
-  }
-
-  /**
-   * Resolves the network latency for a hop between two components. Looks up
-   * the connecting edge in the topology and, when it is missing, throws so a
-   * malformed graph fails loudly rather than silently mis-routing.
-   */
-  private getConnectionLatencyMs(
-    sourceNodeId: string,
-    targetNodeId: string,
-  ): number {
-    const edge = this.runtime.topology.getEdge(sourceNodeId, targetNodeId);
-
-    if (!edge) {
-      throw new Error(
-        `No connection found from ${sourceNodeId} to ${targetNodeId}.`,
-      );
-    }
-
-    const networkLatencyMs = getNetworkLatency(edge);
-
-    return networkLatencyMs;
   }
 }
