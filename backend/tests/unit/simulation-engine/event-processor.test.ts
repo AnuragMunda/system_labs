@@ -65,6 +65,7 @@ function createGraph(): ArchitectureGraph {
 
 function createSimulation(
   graph: ArchitectureGraph = createGraph(),
+  seed: number = 42,
 ): Simulation {
   return {
     id: "simulation-1",
@@ -78,7 +79,7 @@ function createSimulation(
       emitEvents: true,
     },
     currentTimeMs: 0,
-    seed: 42,
+    seed,
     architectureSnapshot: graph,
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
@@ -103,8 +104,11 @@ function createEvent(
   };
 }
 
-function createRuntime(graph: ArchitectureGraph = createGraph()) {
-  const runtime = new SimulationRuntime(createSimulation(graph));
+function createRuntime(
+  graph: ArchitectureGraph = createGraph(),
+  seed: number = 42,
+) {
+  const runtime = new SimulationRuntime(createSimulation(graph, seed));
   const processor = new DefaultEventProcessor(runtime);
 
   return { runtime, processor };
@@ -402,6 +406,127 @@ describe("DefaultEventProcessor", () => {
     expect(scheduled?.type).toBe("request.failed");
     expect(scheduled?.timestampMs).toBe(10);
     expect(scheduled?.payload?.reason).toBe("component_failed");
+  });
+
+  it("should always succeed when errorRate is 0", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { errorRate: 0 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.processing_completed");
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.payload?.requestId).toBe("req-1");
+
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+  });
+
+  it("should always fail when errorRate is 1", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { errorRate: 1 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "req-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.failed");
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.payload?.reason).toBe("component_error");
+
+    // The request was rejected, so the component's active count is unchanged.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+  });
+
+  it("should mark a request as failed on request.failed", () => {
+    const { runtime, processor } = createRuntime();
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(createEvent("request.failed", 25, "req-1", "api", "api"));
+
+    const request = runtime.getRequest("req-1");
+
+    expect(request.status).toBe("failed");
+    expect(request.failedAtMs).toBe(25);
+  });
+
+  it("should produce deterministic success/failure sequences for the same seed and error rate", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { errorRate: 0.5 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runTrace = (seed: number): string[] => {
+      const { runtime, processor } = createRuntime(graph, seed);
+
+      const outcomes: string[] = [];
+
+      for (let i = 0; i < 5; i++) {
+        const requestId = `req-${i}`;
+
+        runtime.createRequest({
+          id: requestId,
+          status: "in-flight",
+          createdAtMs: 0,
+          currentNodeId: "api",
+        });
+
+        processor.process(
+          createEvent("request.processing_started", 10, requestId, "api"),
+        );
+
+        const scheduled = runtime.eventQueue.dequeue();
+
+        outcomes.push(
+          scheduled?.type === "request.processing_completed"
+            ? "success"
+            : "fail",
+        );
+      }
+
+      return outcomes;
+    };
+
+    const traceA = runTrace(42);
+    const traceB = runTrace(42);
+
+    expect(traceA).toEqual(traceB);
+    // Expected from the Mulberry32 PRNG with seed 42: both paths execute and
+    // the same outcomes recur for identical simulations.
+    expect(traceA).toEqual(["success", "fail", "success", "success", "fail"]);
   });
 
   it("should decrement active requests and complete a request at a terminal node", () => {

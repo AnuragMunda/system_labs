@@ -13,7 +13,7 @@ function createEvent(id: string, timestampMs: number): SimulationEvent {
   };
 }
 
-function createSimulation(): Simulation {
+function createSimulation(overrides?: { seed?: number }): Simulation {
   return {
     id: "simulation-1",
     architectureId: "architecture-1",
@@ -26,7 +26,7 @@ function createSimulation(): Simulation {
       emitEvents: true,
     },
     currentTimeMs: 0,
-    seed: 42,
+    seed: overrides?.seed ?? 42,
     architectureSnapshot: { nodes: [], edges: [] },
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
@@ -57,6 +57,28 @@ describe("SimulationRuntime", () => {
 
     expect(runtime.eventQueue.size()).toBe(1);
     expect(runtime.eventQueue.peek()).toBe(event);
+  });
+
+  it("should initialize deterministic randomness from the simulation seed", () => {
+    const simulationA = createSimulation({ seed: 42 });
+    const simulationB = createSimulation({ seed: 42 });
+
+    const runtimeA = new SimulationRuntime(simulationA);
+    const runtimeB = new SimulationRuntime(simulationB);
+
+    expect(runtimeA.random.next()).toBe(runtimeB.random.next());
+    expect(runtimeA.random.next()).toBe(runtimeB.random.next());
+    expect(runtimeA.random.next()).toBe(runtimeB.random.next());
+  });
+
+  it("should produce independent random sequences for different seeds", () => {
+    const simulationA = createSimulation({ seed: 42 });
+    const simulationB = createSimulation({ seed: 43 });
+
+    const runtimeA = new SimulationRuntime(simulationA);
+    const runtimeB = new SimulationRuntime(simulationB);
+
+    expect(runtimeA.random.next()).not.toBe(runtimeB.random.next());
   });
 });
 

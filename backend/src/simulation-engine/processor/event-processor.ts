@@ -10,6 +10,7 @@ import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { EventProcessor } from "../types.js";
 import { getNetworkLatency } from "../network/network-latency.js";
+import { shouldFail } from "../helper.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -34,6 +35,10 @@ export class DefaultEventProcessor implements EventProcessor {
 
       case "request.completed":
         this.handleRequestCompleted(event);
+        break;
+
+      case "request.failed":
+        this.handleRequestFailed(event);
         break;
 
       default:
@@ -145,6 +150,27 @@ export class DefaultEventProcessor implements EventProcessor {
       return;
     }
 
+    const errorRate = node.config.errorRate ?? 0;
+
+    const failed = shouldFail(errorRate, this.runtime.random.next());
+
+    if (failed) {
+      this.runtime.schedule({
+        id: crypto.randomUUID(),
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "request.failed",
+        sourceNodeId: node.id,
+        targetNodeId: node.id,
+        payload: {
+          requestId,
+          reason: "component_error",
+        },
+      });
+
+      return;
+    }
+
     this.runtime.incrementActiveRequests(event.sourceNodeId);
 
     const latencyMs = node.config.latencyMs ?? 0;
@@ -204,6 +230,23 @@ export class DefaultEventProcessor implements EventProcessor {
     this.runtime.updateRequest(requestId, {
       status: "completed",
       completedAtMs: event.timestampMs,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // request.failed
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fails the request.
+   */
+
+  private handleRequestFailed(event: SimulationEvent): void {
+    const requestId = this.getRequestId(event);
+
+    this.runtime.updateRequest(requestId, {
+      status: "failed",
+      failedAtMs: event.timestampMs,
     });
   }
 

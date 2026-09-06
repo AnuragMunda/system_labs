@@ -6,6 +6,7 @@ export interface SimulationRequest {
 
   createdAtMs: number;
   completedAtMs?: number;
+  failedAtMs?: number;
 
   currentNodeId?: string;
 }
