@@ -45,3 +45,21 @@ export function shouldFail(errorRate: number, randomValue: number): boolean {
 
   return randomValue < errorRate;
 }
+
+// ---------------------------------------------------------------------------
+// Retry Policy
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_RETRY_DELAY_MS = 10;
+
+export function canRetry(attempts: number, maxRetries: number): boolean {
+  if (attempts < 1) {
+    throw new Error("Attempts must be at least 1.");
+  }
+
+  if (maxRetries < 0) {
+    throw new Error("Max retries cannot be negative.");
+  }
+
+  return attempts <= maxRetries;
+}

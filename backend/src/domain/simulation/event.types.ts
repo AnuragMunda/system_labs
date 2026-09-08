@@ -14,6 +14,7 @@ export type SimulationEventType =
   | "request.processing_completed"
   | "request.completed"
   | "request.failed"
+  | "request.retry"
   | "cache.hit"
   | "cache.miss"
   | "database.request"

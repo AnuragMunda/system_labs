@@ -9,4 +9,5 @@ export interface SimulationRequest {
   failedAtMs?: number;
 
   currentNodeId?: string;
+  attempts: number;
 }

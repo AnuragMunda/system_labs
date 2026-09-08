@@ -10,7 +10,7 @@ import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { EventProcessor } from "../types.js";
 import { getNetworkLatency } from "../network/network-latency.js";
-import { shouldFail } from "../helper.js";
+import { canRetry, DEFAULT_RETRY_DELAY_MS, shouldFail } from "../helper.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -41,6 +41,10 @@ export class DefaultEventProcessor implements EventProcessor {
         this.handleRequestFailed(event);
         break;
 
+      case "request.retry":
+        this.handleRequestRetry(event);
+        break;
+
       default:
         break;
     }
@@ -66,6 +70,7 @@ export class DefaultEventProcessor implements EventProcessor {
       status: "pending",
       createdAtMs: event.timestampMs,
       currentNodeId: event.sourceNodeId,
+      attempts: 0,
     });
 
     this.routeRequest(event, event.sourceNodeId);
@@ -100,13 +105,22 @@ export class DefaultEventProcessor implements EventProcessor {
 
   private handleProcessingStarted(event: SimulationEvent): void {
     const requestId = this.getRequestId(event);
+    const request = this.runtime.getRequest(requestId);
 
+    // 1. Validate component
     if (!event.sourceNodeId) {
       throw new Error(
         "request.processing_started event requires a sourceNodeId.",
       );
     }
 
+    const node = this.runtime.topology.getNode(event.sourceNodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${event.sourceNodeId}`);
+    }
+
+    // 2. Check component health
     const component = this.runtime.getComponent(event.sourceNodeId);
 
     // Component cannot process requests when failed.
@@ -124,12 +138,6 @@ export class DefaultEventProcessor implements EventProcessor {
       });
 
       return;
-    }
-
-    const node = this.runtime.topology.getNode(event.sourceNodeId);
-
-    if (!node) {
-      throw new Error(`Node not found: ${event.sourceNodeId}`);
     }
 
     const capacity = node.config.capacity;
@@ -150,11 +158,41 @@ export class DefaultEventProcessor implements EventProcessor {
       return;
     }
 
+    // 4. Increment attempt
+    const currentAttempt = request.attempts + 1;
+
+    this.runtime.updateRequest(requestId, {
+      attempts: currentAttempt,
+    });
+
+    // 5. Evaluate error rate
     const errorRate = node.config.errorRate ?? 0;
 
     const failed = shouldFail(errorRate, this.runtime.random.next());
 
+    // 6. If error → retry/fail
     if (failed) {
+      const retryPolicy = node.config.retryPolicy;
+      const maxRetries = retryPolicy?.retries;
+
+      const retryAllowed = canRetry(currentAttempt, maxRetries ?? 0);
+
+      if (retryAllowed) {
+        this.runtime.schedule({
+          id: crypto.randomUUID(),
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs + DEFAULT_RETRY_DELAY_MS,
+          type: "request.retry",
+          sourceNodeId: node.id,
+          targetNodeId: node.id,
+          payload: {
+            requestId,
+          },
+        });
+
+        return;
+      }
+
       this.runtime.schedule({
         id: crypto.randomUUID(),
         simulationId: event.simulationId,
@@ -171,10 +209,12 @@ export class DefaultEventProcessor implements EventProcessor {
       return;
     }
 
+    // 7. Otherwise increment activeRequests
     this.runtime.incrementActiveRequests(event.sourceNodeId);
 
     const latencyMs = node.config.latencyMs ?? 0;
 
+    // 8. Schedule processing_completed
     this.runtime.schedule({
       id: crypto.randomUUID(),
       simulationId: event.simulationId,
@@ -247,6 +287,26 @@ export class DefaultEventProcessor implements EventProcessor {
     this.runtime.updateRequest(requestId, {
       status: "failed",
       failedAtMs: event.timestampMs,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // request.retry
+  // ---------------------------------------------------------------------------
+
+  private handleRequestRetry(event: SimulationEvent): void {
+    const requestId = this.getRequestId(event);
+
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs,
+      type: "request.processing_started",
+      sourceNodeId: event.sourceNodeId,
+      targetNodeId: event.targetNodeId,
+      payload: {
+        requestId,
+      },
     });
   }
 

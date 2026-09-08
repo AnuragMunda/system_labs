@@ -146,6 +146,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "client",
     });
 
@@ -195,6 +196,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "client",
     });
 
@@ -239,6 +241,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "client",
     });
 
@@ -285,6 +288,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -313,6 +317,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "database",
     });
 
@@ -338,6 +343,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -368,6 +374,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -394,6 +401,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -420,6 +428,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -448,6 +457,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -472,6 +482,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -501,6 +512,7 @@ describe("DefaultEventProcessor", () => {
           id: requestId,
           status: "in-flight",
           createdAtMs: 0,
+          attempts: 0,
           currentNodeId: "api",
         });
 
@@ -545,6 +557,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "database",
     });
 
@@ -602,6 +615,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "client",
     });
 
@@ -648,12 +662,14 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "gateway",
     });
     runtime.createRequest({
       id: "req-2",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "gateway",
     });
 
@@ -737,12 +753,14 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "gateway",
     });
     runtime.createRequest({
       id: "req-2",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "queue",
     });
 
@@ -801,6 +819,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "gateway",
     });
     processor.process(
@@ -818,6 +837,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-2",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "gateway",
     });
     processor.process(
@@ -850,6 +870,7 @@ describe("DefaultEventProcessor", () => {
       id: "req-1",
       status: "pending",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -887,6 +908,7 @@ describe("error rate failure lifecycle", () => {
       id: "request-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -928,6 +950,7 @@ describe("error rate failure lifecycle", () => {
       id: "request-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -971,6 +994,7 @@ describe("error rate failure lifecycle", () => {
       id: "request-1",
       status: "in-flight",
       createdAtMs: 0,
+      attempts: 0,
       currentNodeId: "api",
     });
 
@@ -1022,6 +1046,7 @@ describe("error rate failure lifecycle", () => {
           id: requestId,
           status: "in-flight",
           createdAtMs: 0,
+          attempts: 0,
           currentNodeId: "api",
         });
 
@@ -1058,6 +1083,228 @@ describe("error rate failure lifecycle", () => {
       "FAILURE",
       "SUCCESS",
     ]);
+  });
+
+  it("should retry an error-rate failure and succeed on the retry", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          errorRate: 0.5,
+          retryPolicy: { retries: 1, circuitBreaker: false },
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    // First roll fails, the retry roll succeeds.
+    vi.spyOn(runtime.random, "next")
+      .mockReturnValueOnce(0.4)
+      .mockReturnValueOnce(0.6);
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    const retry = runtime.eventQueue.dequeue();
+
+    expect(retry).toMatchObject({
+      type: "request.retry",
+      timestampMs: 20,
+      payload: {
+        requestId: "request-1",
+      },
+    });
+
+    processor.process(retry!);
+
+    const startedAgain = runtime.eventQueue.dequeue();
+
+    expect(startedAgain?.type).toBe("request.processing_started");
+
+    processor.process(startedAgain!);
+
+    const completed = runtime.eventQueue.dequeue();
+
+    expect(completed).toMatchObject({
+      type: "request.processing_completed",
+      payload: { requestId: "request-1" },
+    });
+
+    expect(runtime.getRequest("request-1").attempts).toBe(2);
+  });
+
+  it("should fail permanently after exhausting the retry budget", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          errorRate: 0.5,
+          retryPolicy: { retries: 1, circuitBreaker: false },
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    // Both the initial attempt and the retry roll fail.
+    vi.spyOn(runtime.random, "next").mockReturnValue(0.4);
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    const retry = runtime.eventQueue.dequeue();
+
+    expect(retry?.type).toBe("request.retry");
+
+    processor.process(retry!);
+
+    const startedAgain = runtime.eventQueue.dequeue();
+
+    expect(startedAgain?.type).toBe("request.processing_started");
+
+    processor.process(startedAgain!);
+
+    const failed = runtime.eventQueue.dequeue();
+
+    expect(failed).toMatchObject({
+      type: "request.failed",
+      payload: {
+        requestId: "request-1",
+        reason: "component_error",
+      },
+    });
+
+    // Nothing else was scheduled and the request never consumed capacity.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getRequest("request-1").attempts).toBe(2);
+  });
+
+  it("should not consume capacity when the retry budget is exhausted", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          errorRate: 1,
+          retryPolicy: { retries: 2, circuitBreaker: false },
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    // Failed attempts must never increment the component's active count.
+    const incrementSpy = vi.spyOn(runtime, "incrementActiveRequests");
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    engine.schedule(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    engine.run();
+
+    // retries: 2 allows two retries (attempts 1 and 2); the third failure
+    // exhausts the budget and fails the request permanently.
+    expect(runtime.getRequest("request-1")).toMatchObject({
+      status: "failed",
+      attempts: 3,
+      failedAtMs: expect.any(Number),
+    });
+
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(incrementSpy).not.toHaveBeenCalled();
+  });
+
+  it("should retry a failing attempt and complete on the retry", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          errorRate: 0.5,
+          retryPolicy: { retries: 1, circuitBreaker: false },
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    // Attempt 1 fails, the retry succeeds.
+    vi.spyOn(runtime.random, "next")
+      .mockReturnValueOnce(0.01)
+      .mockReturnValueOnce(0.9);
+
+    const processed: SimulationEvent["type"][] = [];
+
+    const originalProcess = processor.process.bind(processor);
+    processor.process = (event) => {
+      processed.push(event.type);
+      originalProcess(event);
+    };
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    engine.schedule(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    engine.run();
+
+    expect(processed).toEqual([
+      "request.processing_started",
+      "request.retry",
+      "request.processing_started",
+      "request.processing_completed",
+      "request.completed",
+    ]);
+
+    const request = runtime.getRequest("request-1");
+
+    expect(request.status).toBe("completed");
+    expect(request.attempts).toBe(2);
+
+    // Capacity was consumed during processing and released on completion.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
   });
 });
 
