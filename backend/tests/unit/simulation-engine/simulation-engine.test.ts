@@ -2,6 +2,7 @@ import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js"
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
+import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { describe, expect, it, vi } from "vitest";
 
 function createEvent(id: string, timestampMs: number): SimulationEvent {
@@ -13,7 +14,10 @@ function createEvent(id: string, timestampMs: number): SimulationEvent {
   };
 }
 
-function createSimulation(overrides?: { seed?: number }): Simulation {
+function createSimulation(overrides?: {
+  seed?: number;
+  architectureSnapshot?: ArchitectureGraph;
+}): Simulation {
   return {
     id: "simulation-1",
     architectureId: "architecture-1",
@@ -27,7 +31,10 @@ function createSimulation(overrides?: { seed?: number }): Simulation {
     },
     currentTimeMs: 0,
     seed: overrides?.seed ?? 42,
-    architectureSnapshot: { nodes: [], edges: [] },
+    architectureSnapshot: overrides?.architectureSnapshot ?? {
+      nodes: [],
+      edges: [],
+    },
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 }
@@ -79,6 +86,114 @@ describe("SimulationRuntime", () => {
     const runtimeB = new SimulationRuntime(simulationB);
 
     expect(runtimeA.random.next()).not.toBe(runtimeB.random.next());
+  });
+
+  it("should track the active request count for a node", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    expect(runtime.getActiveRequestCount("api")).toBe(0);
+
+    runtime.incrementActiveRequests("api");
+    runtime.incrementActiveRequests("api");
+
+    expect(runtime.getActiveRequestCount("api")).toBe(2);
+
+    runtime.decrementActiveRequests("api");
+
+    expect(runtime.getActiveRequestCount("api")).toBe(1);
+  });
+
+  it("should default effective concurrency to 1 for an unconfigured node", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    expect(runtime.getEffectiveConcurrency("api")).toBe(1);
+  });
+
+  it("should multiply replicas by concurrency for the effective concurrency", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: { replicas: 2, concurrency: 5 },
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    expect(runtime.getEffectiveConcurrency("api")).toBe(10);
+  });
+
+  it("should throw when computing effective concurrency for an unknown node", () => {
+    const runtime = new SimulationRuntime(createSimulation());
+
+    expect(() => runtime.getEffectiveConcurrency("missing")).toThrow(
+      "Node not found: missing.",
+    );
+  });
+
+  it("should report capacity while active requests are below effective concurrency", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: { replicas: 2, concurrency: 2 },
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    expect(runtime.hasCapacity("api")).toBe(true);
+
+    runtime.incrementActiveRequests("api");
+    runtime.incrementActiveRequests("api");
+    runtime.incrementActiveRequests("api");
+    runtime.incrementActiveRequests("api");
+
+    expect(runtime.hasCapacity("api")).toBe(false);
   });
 });
 

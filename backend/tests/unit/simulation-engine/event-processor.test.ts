@@ -361,8 +361,11 @@ describe("DefaultEventProcessor", () => {
   });
 
   it("should fail a request when the component capacity is exceeded", () => {
+    // Capacity is determined by effective concurrency (replicas * concurrency).
+    // With default replicas of 1 and concurrency of 1, a component handles a
+    // single request at a time.
     const graph: ArchitectureGraph = {
-      nodes: [node("client", "client"), node("api", "api", { capacity: 1 })],
+      nodes: [node("client", "client"), node("api", "api", { concurrency: 1 })],
       edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
     };
 
@@ -390,6 +393,124 @@ describe("DefaultEventProcessor", () => {
 
     // The request was rejected, so the component's active count is unchanged.
     expect(runtime.getComponent("api").activeRequests).toBe(1);
+  });
+
+  describe("capacity lifecycle", () => {
+    it("should accept one of two simultaneous requests and reject the second at capacity 1", () => {
+      // A terminal node (no outgoing edges) keeps the lifecycle self-contained:
+      // processing_completed decrements the active count and immediately
+      // completes the request, so no routing assertions are needed.
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", { concurrency: 1 }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-2",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // First request acquires the single slot.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      expect(runtime.getComponent("api").activeRequests).toBe(1);
+
+      // Drain the first request's queued processing_completed so the next
+      // dequeue reflects the second request's outcome.
+      runtime.eventQueue.dequeue();
+
+      // Second simultaneous request is rejected: capacity never exceeds 1.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-2", "api"),
+      );
+
+      const secondScheduled = runtime.eventQueue.dequeue();
+
+      expect(secondScheduled?.type).toBe("request.failed");
+      expect(secondScheduled?.payload?.reason).toBe(
+        "component_capacity_exceeded",
+      );
+
+      // The rejection did not consume capacity, so the active count stays at 1
+      // rather than rising above the limit.
+      expect(runtime.getComponent("api").activeRequests).toBe(1);
+    });
+
+    it("should release the slot on processing_completed and accept the next request", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", { concurrency: 1 }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-3",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // First request acquires the slot.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const completed = runtime.eventQueue.dequeue();
+
+      // Second request is rejected while the slot is held.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-3", "api"),
+      );
+
+      const rejected = runtime.eventQueue.dequeue();
+
+      expect(rejected?.type).toBe("request.failed");
+      expect(rejected?.payload?.reason).toBe("component_capacity_exceeded");
+
+      // Completing the first request decrements the active count and releases
+      // the slot back to the component.
+      processor.process({ ...completed });
+
+      expect(runtime.getComponent("api").activeRequests).toBe(0);
+
+      // With the slot freed, a subsequent request is accepted again.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-3", "api"),
+      );
+
+      expect(runtime.getComponent("api").activeRequests).toBe(1);
+    });
   });
 
   it("should fail a request when the component has failed", () => {
@@ -495,8 +616,15 @@ describe("DefaultEventProcessor", () => {
   });
 
   it("should produce deterministic success/failure sequences for the same seed and error rate", () => {
+    // A high concurrency keeps the trace focused on error-rate determinism:
+    // each successful attempt leaves one active request behind (its
+    // processing_completed is never drained here), and the default effective
+    // concurrency of 1 would otherwise cap the trace at a single success.
     const graph: ArchitectureGraph = {
-      nodes: [node("client", "client"), node("api", "api", { errorRate: 0.5 })],
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { errorRate: 0.5, concurrency: 10 }),
+      ],
       edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
     };
 
@@ -1029,8 +1157,15 @@ describe("error rate failure lifecycle", () => {
   });
 
   it("should produce identical success/failure sequences for seed 12345", () => {
+    // A high concurrency keeps the trace focused on error-rate determinism:
+    // each successful attempt leaves one active request behind (its
+    // processing_completed is never drained here), and the default effective
+    // concurrency of 1 would otherwise cap the trace at a single success.
     const graph: ArchitectureGraph = {
-      nodes: [node("client", "client"), node("api", "api", { errorRate: 0.5 })],
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { errorRate: 0.5, concurrency: 10 }),
+      ],
       edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
     };
 

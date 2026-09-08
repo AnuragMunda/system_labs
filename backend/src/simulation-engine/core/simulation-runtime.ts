@@ -17,6 +17,7 @@ import { ComponentRuntimeState } from "../components/component-runtime-state.js"
 import { RoundRobinStrategy } from "../routing/round-robin-strategy.js";
 import type { RoutingStrategy } from "../routing/routing-strategy.js";
 import { SimulationRandom } from "../random/simulation-random.js";
+import { getEffectiveConcurrency } from "../helper.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -143,6 +144,42 @@ export class SimulationRuntime {
     this.updateComponent(nodeId, {
       processedRequests: component.processedRequests + 1,
     });
+  }
+
+  /**
+   * Gets active request count for a node.
+   */
+  getActiveRequestCount(nodeId: string): number {
+    return this.components.get(nodeId)?.activeRequests ?? 0;
+  }
+
+  /**
+   * Calculates the effective concurrency for a node based on its configuration.
+   * This is the maximum number of requests that can be processed concurrently
+   * by the node.
+   */
+  getEffectiveConcurrency(nodeId: string): number {
+    const node = this.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}.`);
+    }
+
+    const replicas = node.config.replicas ?? 1;
+    const concurrency = node.config.concurrency ?? 1;
+
+    return getEffectiveConcurrency(replicas, concurrency);
+  }
+
+  /**
+   * Determines if a node has capacity to process more requests based on its
+   * effective concurrency and the number of active requests.
+   */
+  hasCapacity(nodeId: string): boolean {
+    const activeRequests = this.getActiveRequestCount(nodeId);
+    const effectiveConcurrency = this.getEffectiveConcurrency(nodeId);
+
+    return activeRequests < effectiveConcurrency;
   }
 
   // ---------------------------------------------------------------------------

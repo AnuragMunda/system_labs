@@ -140,9 +140,7 @@ export class DefaultEventProcessor implements EventProcessor {
       return;
     }
 
-    const capacity = node.config.capacity;
-
-    if (capacity !== undefined && component.activeRequests >= capacity) {
+    if (!this.runtime.hasCapacity(event.sourceNodeId)) {
       this.runtime.schedule({
         id: crypto.randomUUID(),
         simulationId: event.simulationId,

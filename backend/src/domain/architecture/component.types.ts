@@ -65,8 +65,6 @@ interface ComponentConfig {
   capacity?: number; // Maximum number of requests that can be processed simultaneously
   concurrency?: number; // Number of concurrent operations
   errorRate?: number; // Rate of errors occurring (0-1)
-
-  // Extended editor configuration
   replicas?: number;
   cpu?: number; // CPU cores per replica
   memory?: number; // Memory in GB per replica
