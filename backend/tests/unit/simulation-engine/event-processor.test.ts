@@ -871,6 +871,196 @@ describe("DefaultEventProcessor", () => {
   });
 });
 
+describe("error rate failure lifecycle", () => {
+  it("should schedule request.failed and nothing else when errorRate is 1", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 20, capacity: 10, errorRate: 1 }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled).toMatchObject({
+      type: "request.failed",
+      payload: {
+        requestId: "request-1",
+        reason: "component_error",
+      },
+    });
+
+    // Nothing else was scheduled: no processing_completed, no routing.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+
+    // A failed request never consumes active capacity.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+  });
+
+  it("should mark the request failed through the full engine lifecycle", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 20, capacity: 10, errorRate: 1 }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    engine.schedule(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    engine.run();
+
+    expect(runtime.getRequest("request-1")).toMatchObject({
+      status: "failed",
+      failedAtMs: expect.any(Number),
+    });
+
+    // The failed request neither routed onwards nor consumed capacity.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+  });
+
+  it("should keep errorRate 0 requests on the normal path through completion", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 20, errorRate: 0 }),
+        node("database", "database"),
+      ],
+      edges: [
+        { id: "edge-1", source: "client", target: "api", config: {} },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 5 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "request-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      currentNodeId: "api",
+    });
+
+    processor.process(
+      createEvent("request.processing_started", 10, "request-1", "api"),
+    );
+
+    const completedProcessing = runtime.eventQueue.dequeue();
+
+    expect(completedProcessing).toMatchObject({
+      type: "request.processing_completed",
+      timestampMs: 30,
+      payload: { requestId: "request-1" },
+    });
+
+    processor.process(completedProcessing!);
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed?.type).toBe("request.routed");
+    expect(routed?.targetNodeId).toBe("database");
+
+    processor.process(routed!);
+
+    const completed = runtime.eventQueue.dequeue();
+
+    expect(completed?.type).toBe("request.completed");
+
+    processor.process(completed!);
+
+    expect(runtime.getRequest("request-1").status).toBe("completed");
+  });
+
+  it("should produce identical success/failure sequences for seed 12345", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api", { errorRate: 0.5 })],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runTrace = (seed: number): string[] => {
+      const { runtime, processor } = createRuntime(graph, seed);
+
+      const outcomes: string[] = [];
+
+      for (let i = 0; i < 8; i++) {
+        const requestId = `request-${i}`;
+
+        runtime.createRequest({
+          id: requestId,
+          status: "in-flight",
+          createdAtMs: 0,
+          currentNodeId: "api",
+        });
+
+        processor.process(
+          createEvent("request.processing_started", 10, requestId, "api"),
+        );
+
+        const scheduled = runtime.eventQueue.dequeue();
+
+        outcomes.push(
+          scheduled?.type === "request.processing_completed"
+            ? "SUCCESS"
+            : "FAILURE",
+        );
+      }
+
+      return outcomes;
+    };
+
+    const traceA = runTrace(12345);
+    const traceB = runTrace(12345);
+
+    // Two identical simulations with the same seed must produce the
+    // same success/failure sequence.
+    expect(traceA).toEqual(traceB);
+    // Expected from the Mulberry32 PRNG with seed 12345.
+    expect(traceA).toEqual([
+      "SUCCESS",
+      "FAILURE",
+      "FAILURE",
+      "SUCCESS",
+      "SUCCESS",
+      "FAILURE",
+      "FAILURE",
+      "SUCCESS",
+    ]);
+  });
+});
+
 describe("SimulationEngine with DefaultEventProcessor", () => {
   it("should route a request through Client → API → Database and complete it", () => {
     const runtime = new SimulationRuntime(createSimulation());
