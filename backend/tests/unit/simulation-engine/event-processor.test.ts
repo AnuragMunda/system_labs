@@ -360,7 +360,7 @@ describe("DefaultEventProcessor", () => {
     expect(runtime.getComponent("api").activeRequests).toBe(1);
   });
 
-  it("should fail a request when the component capacity is exceeded", () => {
+  it("should queue a request when the component capacity is exceeded", () => {
     // Capacity is determined by effective concurrency (replicas * concurrency).
     // With default replicas of 1 and concurrency of 1, a component handles a
     // single request at a time.
@@ -385,18 +385,16 @@ describe("DefaultEventProcessor", () => {
       createEvent("request.processing_started", 10, "req-1", "api"),
     );
 
-    const scheduled = runtime.eventQueue.dequeue();
+    // Nothing was scheduled — the request was queued instead of rejected.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
 
-    expect(scheduled?.type).toBe("request.failed");
-    expect(scheduled?.timestampMs).toBe(10);
-    expect(scheduled?.payload?.reason).toBe("component_capacity_exceeded");
-
-    // The request was rejected, so the component's active count is unchanged.
+    // The queue did not consume capacity, so the active count is unchanged.
     expect(runtime.getComponent("api").activeRequests).toBe(1);
   });
 
   describe("capacity lifecycle", () => {
-    it("should accept one of two simultaneous requests and reject the second at capacity 1", () => {
+    it("should accept one of two simultaneous requests and queue the second at capacity 1", () => {
       // A terminal node (no outgoing edges) keeps the lifecycle self-contained:
       // processing_completed decrements the active count and immediately
       // completes the request, so no routing assertions are needed.
@@ -433,28 +431,16 @@ describe("DefaultEventProcessor", () => {
 
       expect(runtime.getComponent("api").activeRequests).toBe(1);
 
-      // Drain the first request's queued processing_completed so the next
-      // dequeue reflects the second request's outcome.
-      runtime.eventQueue.dequeue();
-
-      // Second simultaneous request is rejected: capacity never exceeds 1.
+      // Second simultaneous request is queued: capacity never exceeds 1.
       processor.process(
         createEvent("request.processing_started", 10, "req-2", "api"),
       );
 
-      const secondScheduled = runtime.eventQueue.dequeue();
-
-      expect(secondScheduled?.type).toBe("request.failed");
-      expect(secondScheduled?.payload?.reason).toBe(
-        "component_capacity_exceeded",
-      );
-
-      // The rejection did not consume capacity, so the active count stays at 1
-      // rather than rising above the limit.
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
       expect(runtime.getComponent("api").activeRequests).toBe(1);
     });
 
-    it("should release the slot on processing_completed and accept the next request", () => {
+    it("should release the slot on processing_completed and dequeue the next request", () => {
       const graph: ArchitectureGraph = {
         nodes: [
           node("client", "client"),
@@ -488,28 +474,24 @@ describe("DefaultEventProcessor", () => {
 
       const completed = runtime.eventQueue.dequeue();
 
-      // Second request is rejected while the slot is held.
+      // Second request is queued while the slot is held.
       processor.process(
         createEvent("request.processing_started", 10, "req-3", "api"),
       );
 
-      const rejected = runtime.eventQueue.dequeue();
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
 
-      expect(rejected?.type).toBe("request.failed");
-      expect(rejected?.payload?.reason).toBe("component_capacity_exceeded");
-
-      // Completing the first request decrements the active count and releases
-      // the slot back to the component.
+      // Completing the first request decrements the active count, releases
+      // the slot, and dequeues the next request.
       processor.process({ ...completed });
 
       expect(runtime.getComponent("api").activeRequests).toBe(0);
 
-      // With the slot freed, a subsequent request is accepted again.
-      processor.process(
-        createEvent("request.processing_started", 10, "req-3", "api"),
-      );
+      // The queued request was scheduled for processing.
+      const nextProcessing = runtime.eventQueue.dequeue();
 
-      expect(runtime.getComponent("api").activeRequests).toBe(1);
+      expect(nextProcessing?.type).toBe("request.processing_started");
+      expect(nextProcessing?.payload?.requestId).toBe("req-3");
     });
   });
 
@@ -1477,5 +1459,319 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     expect(request.createdAtMs).toBe(0);
     expect(request.completedAtMs).toBe(20);
     expect(runtime.currentTimeMs).toBe(20);
+  });
+});
+
+describe("request queueing", () => {
+  const queueGraph: ArchitectureGraph = {
+    nodes: [
+      node("client", "client"),
+      node("api", "api", { latencyMs: 10, replicas: 1, concurrency: 1 }),
+    ],
+    edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+  };
+
+  it("should queue a request instead of failing at capacity", () => {
+    const runtime = new SimulationRuntime(createSimulation(queueGraph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    const eventTypes: string[] = [];
+
+    const originalProcess = processor.process.bind(processor);
+    processor.process = (event) => {
+      eventTypes.push(event.type);
+      originalProcess(event);
+    };
+
+    runtime.createRequest({
+      id: "A",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    runtime.createRequest({
+      id: "B",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    engine.schedule(createEvent("request.processing_started", 0, "A", "api"));
+
+    engine.schedule(createEvent("request.processing_started", 0, "B", "api"));
+
+    engine.run();
+
+    // B was queued, not rejected.
+    expect(eventTypes).not.toContain("request.failed");
+
+    // Both requests completed successfully.
+    expect(runtime.getRequest("A").status).toBe("completed");
+    expect(runtime.getRequest("B").status).toBe("completed");
+
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
+  it("should release the slot and dequeue the next request on completion", () => {
+    const { runtime, processor } = createRuntime(queueGraph);
+
+    runtime.createRequest({
+      id: "A",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    runtime.createRequest({
+      id: "B",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    // A occupies the single slot.
+    processor.process(createEvent("request.processing_started", 0, "A", "api"));
+
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+
+    // B is queued.
+    processor.process(createEvent("request.processing_started", 0, "B", "api"));
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
+
+    // Drain A's scheduled processing_completed (from the successful start).
+    const aCompleted = runtime.eventQueue.dequeue();
+
+    expect(aCompleted?.type).toBe("request.processing_completed");
+
+    // Manually process A's completion → slot released, B dequeued.
+    processor.process(aCompleted!);
+
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+
+    // A processing_started for B was scheduled.
+    const scheduled = runtime.eventQueue.dequeue();
+
+    expect(scheduled?.type).toBe("request.processing_started");
+    expect(scheduled?.payload?.requestId).toBe("B");
+
+    // Process B's event → B starts.
+    processor.process(scheduled!);
+
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+    expect(runtime.getRequest("B").attempts).toBe(1);
+  });
+
+  it("should process three requests in FIFO order", () => {
+    const runtime = new SimulationRuntime(createSimulation(queueGraph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    const completed: string[] = [];
+
+    const originalProcess = processor.process.bind(processor);
+    processor.process = (event) => {
+      originalProcess(event);
+      if (
+        event.type === "request.completed" &&
+        typeof event.payload?.requestId === "string"
+      ) {
+        completed.push(event.payload.requestId);
+      }
+    };
+
+    for (const id of ["A", "B", "C"]) {
+      runtime.createRequest({
+        id,
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+    }
+
+    // A starts at 0ms → occupies the slot.
+    engine.schedule(createEvent("request.processing_started", 0, "A", "api"));
+    // B and C try to start at 0ms → both get queued.
+    engine.schedule(createEvent("request.processing_started", 0, "B", "api"));
+    engine.schedule(createEvent("request.processing_started", 0, "C", "api"));
+
+    engine.run();
+
+    // Completion order: A → B → C (FIFO).
+    expect(completed).toEqual(["A", "B", "C"]);
+
+    // All three completed, nothing queued.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
+  it("should queue only after filling all replica slots", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 10, replicas: 2, concurrency: 2 }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    // effectiveConcurrency = 2 replicas * 2 concurrency = 4.
+    for (const id of ["A", "B", "C", "D", "E"]) {
+      runtime.createRequest({
+        id,
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+    }
+
+    // First four requests fill all slots.
+    for (const id of ["A", "B", "C", "D"]) {
+      engine.schedule(createEvent("request.processing_started", 0, id, "api"));
+    }
+
+    // Fifth request has no capacity → queued.
+    engine.schedule(createEvent("request.processing_started", 0, "E", "api"));
+
+    engine.run();
+
+    // All five completed.
+    for (const id of ["A", "B", "C", "D", "E"]) {
+      expect(runtime.getRequest(id).status).toBe("completed");
+    }
+
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
+  it("should not consume capacity or queue slots on a failed retry", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          concurrency: 1,
+          errorRate: 1,
+          retryPolicy: { retries: 1, circuitBreaker: false },
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    // All random rolls produce failures (0.4 < errorRate 1.0).
+    vi.spyOn(runtime.random, "next").mockReturnValue(0.4);
+
+    const eventTypes: string[] = [];
+
+    const originalProcess = processor.process.bind(processor);
+    processor.process = (event) => {
+      eventTypes.push(event.type);
+      originalProcess(event);
+    };
+
+    runtime.createRequest({
+      id: "A",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    runtime.createRequest({
+      id: "B",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "api",
+    });
+
+    // A starts processing → errorRate=1 means it fails without occupying the slot.
+    engine.schedule(createEvent("request.processing_started", 0, "A", "api"));
+
+    // B also starts → same outcome (A never held the slot, so B has capacity).
+    engine.schedule(createEvent("request.processing_started", 0, "B", "api"));
+
+    engine.run();
+
+    // Both requests failed via error rate after exhausting retries.
+    expect(runtime.getRequest("A").status).toBe("failed");
+    expect(runtime.getRequest("B").status).toBe("failed");
+
+    // Retries were scheduled and consumed.
+    expect(eventTypes.filter((t) => t === "request.retry")).toHaveLength(2);
+    expect(eventTypes.filter((t) => t === "request.failed")).toHaveLength(2);
+
+    // activeRequests was never incremented (error path skips it).
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+
+    // Nothing was ever queued (error path never enqueues).
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
+  it("should maintain activeRequests <= effectiveConcurrency at all times", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 5, replicas: 2, concurrency: 2 }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(runtime, processor);
+
+    const effectiveConcurrency = runtime.getEffectiveConcurrency("api");
+
+    let maxObserved = 0;
+
+    const originalIncrement = runtime.incrementActiveRequests.bind(runtime);
+    runtime.incrementActiveRequests = (nodeId: string) => {
+      originalIncrement(nodeId);
+      const current = runtime.getComponent(nodeId).activeRequests;
+      if (current > maxObserved) maxObserved = current;
+      expect(current).toBeLessThanOrEqual(effectiveConcurrency);
+    };
+
+    for (const id of ["A", "B", "C", "D", "E", "F"]) {
+      runtime.createRequest({
+        id,
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+    }
+
+    // Six requests into a component with effectiveConcurrency=4.
+    for (const id of ["A", "B", "C", "D", "E", "F"]) {
+      engine.schedule(createEvent("request.processing_started", 0, id, "api"));
+    }
+
+    engine.run();
+
+    // The invariant held throughout the run.
+    expect(maxObserved).toBeLessThanOrEqual(effectiveConcurrency);
+    expect(maxObserved).toBe(effectiveConcurrency);
+
+    // All requests completed, nothing leaked.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
   });
 });

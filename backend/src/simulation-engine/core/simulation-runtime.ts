@@ -18,6 +18,7 @@ import { RoundRobinStrategy } from "../routing/round-robin-strategy.js";
 import type { RoutingStrategy } from "../routing/routing-strategy.js";
 import { SimulationRandom } from "../random/simulation-random.js";
 import { getEffectiveConcurrency } from "../helper.js";
+import { ComponentRequestQueue } from "../capacity/component-request-queue.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -29,6 +30,8 @@ export class SimulationRuntime {
   readonly topology: ArchitectureTopology;
   readonly clock: SimulationClock = new SimulationClock();
   readonly eventQueue: EventQueue = new EventQueue();
+  readonly componentRequestQueue: ComponentRequestQueue =
+    new ComponentRequestQueue();
   routingStrategy: RoutingStrategy = new RoundRobinStrategy();
   readonly random: SimulationRandom;
 
@@ -183,7 +186,26 @@ export class SimulationRuntime {
   }
 
   // ---------------------------------------------------------------------------
-  // Lifecycle
+  // COMPONENT REQUEST QUEUE
+  // ---------------------------------------------------------------------------
+
+  /** Append a request to the back of the given component's queue. */
+  enqueueRequest(nodeId: string, requestId: string): void {
+    this.componentRequestQueue.enqueue(nodeId, requestId);
+  }
+
+  /** Remove and return the next request from a component's queue, or `undefined` if empty. */
+  dequeueRequest(nodeId: string): string | undefined {
+    return this.componentRequestQueue.dequeue(nodeId);
+  }
+
+  /** Return the number of requests waiting in a component's queue. */
+  getQueuedRequestCount(nodeId: string): number {
+    return this.componentRequestQueue.size(nodeId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // LIFECYCLE
   // ---------------------------------------------------------------------------
 
   /**
@@ -210,6 +232,7 @@ export class SimulationRuntime {
 
     this.requests.clear();
     this.components.clear();
+    this.componentRequestQueue.clear();
 
     this.initializeComponents();
   }

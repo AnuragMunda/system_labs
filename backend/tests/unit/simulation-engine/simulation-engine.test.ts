@@ -168,6 +168,139 @@ describe("SimulationRuntime", () => {
     );
   });
 
+  it("should enqueue a request and report queued count", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    runtime.enqueueRequest("api", "request-1");
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
+  });
+
+  it("should dequeue a request from a component queue", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    runtime.enqueueRequest("api", "request-1");
+
+    const requestId = runtime.dequeueRequest("api");
+
+    expect(requestId).toBe("request-1");
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
+  it("should dequeue requests in FIFO order through the runtime", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    runtime.enqueueRequest("api", "request-1");
+    runtime.enqueueRequest("api", "request-2");
+    runtime.enqueueRequest("api", "request-3");
+
+    expect(runtime.dequeueRequest("api")).toBe("request-1");
+    expect(runtime.dequeueRequest("api")).toBe("request-2");
+    expect(runtime.dequeueRequest("api")).toBe("request-3");
+  });
+
+  it("should maintain independent queues per component", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+        {
+          id: "worker",
+          type: "worker",
+          name: "worker",
+          position: { x: 100, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    runtime.enqueueRequest("api", "request-1");
+    runtime.enqueueRequest("worker", "request-2");
+
+    expect(runtime.dequeueRequest("api")).toBe("request-1");
+    expect(runtime.dequeueRequest("worker")).toBe("request-2");
+  });
+
+  it("should clear component request queues on reset", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    runtime.enqueueRequest("api", "request-1");
+
+    runtime.reset();
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
+
   it("should report capacity while active requests are below effective concurrency", () => {
     const graph: ArchitectureGraph = {
       nodes: [

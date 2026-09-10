@@ -141,18 +141,7 @@ export class DefaultEventProcessor implements EventProcessor {
     }
 
     if (!this.runtime.hasCapacity(event.sourceNodeId)) {
-      this.runtime.schedule({
-        id: crypto.randomUUID(),
-        simulationId: event.simulationId,
-        timestampMs: event.timestampMs,
-        type: "request.failed",
-        sourceNodeId: event.sourceNodeId,
-        payload: {
-          requestId,
-          reason: "component_capacity_exceeded",
-        },
-      });
-
+      this.runtime.enqueueRequest(event.sourceNodeId, requestId);
       return;
     }
 
@@ -249,6 +238,22 @@ export class DefaultEventProcessor implements EventProcessor {
 
     this.runtime.decrementActiveRequests(sourceNodeId);
     this.runtime.recordProcessedRequest(sourceNodeId);
+
+    const queuedRequestId = this.runtime.dequeueRequest(sourceNodeId);
+
+    if (queuedRequestId) {
+      this.runtime.schedule({
+        id: crypto.randomUUID(),
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "request.processing_started",
+        sourceNodeId: sourceNodeId,
+        targetNodeId: sourceNodeId,
+        payload: {
+          requestId: queuedRequestId,
+        },
+      });
+    }
 
     this.routeRequest(event, sourceNodeId);
   }
