@@ -2,9 +2,7 @@
  * @file helper.ts
  *
  * @description Pure helper functions consumed by the simulation engine's event
- * processor and component logic. These are small, deterministic utilities that
- * decide simulation behaviour based on configuration values and the PRNG
- * output — they have no side-effects and no framework dependencies.
+ * processor and component logic.
  */
 
 // ---------------------------------------------------------------------------
