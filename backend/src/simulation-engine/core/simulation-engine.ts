@@ -34,16 +34,44 @@ export class SimulationEngine {
    * has run.
    */
   run(): void {
-    while (!this.runtime.eventQueue.isEmpty()) {
-      const event = this.runtime.eventQueue.dequeue();
+    if (this.runtime.simulation.status !== "created") {
+      throw new Error(
+        `Simulation cannot be run from status ${this.runtime.simulation.status}`,
+      );
+    }
 
-      if (!event) {
-        break;
+    this.runtime.simulation.status = "running";
+    this.runtime.simulation.startedAt = new Date();
+
+    try {
+      while (!this.runtime.eventQueue.isEmpty()) {
+        const nextEvent = this.runtime.eventQueue.peek();
+
+        if (
+          !nextEvent ||
+          nextEvent.timestampMs >= this.runtime.simulation.config.durationMs
+        ) {
+          break;
+        }
+
+        const event = this.runtime.eventQueue.dequeue();
+
+        if (!event) {
+          break;
+        }
+
+        this.runtime.clock.advanceTo(event.timestampMs);
+
+        this.eventProcessor.process(event);
       }
 
-      this.runtime.clock.advanceTo(event.timestampMs);
+      this.runtime.simulation.status = "completed";
+      this.runtime.simulation.completedAt = new Date();
+    } catch (error) {
+      this.runtime.simulation.status = "failed";
+      this.runtime.simulation.completedAt = new Date();
 
-      this.eventProcessor.process(event);
+      throw error;
     }
   }
 }

@@ -70,7 +70,7 @@ function createSimulation(
   return {
     id: "simulation-1",
     architectureId: "architecture-1",
-    status: "running",
+    status: "created",
     config: {
       durationMs: 1000,
       requestsPerSecond: 10,
@@ -81,6 +81,7 @@ function createSimulation(
     currentTimeMs: 0,
     seed,
     architectureSnapshot: graph,
+    startedAt: new Date("2026-01-01T00:00:00Z"),
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 }

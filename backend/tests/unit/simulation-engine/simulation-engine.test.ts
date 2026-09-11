@@ -1,6 +1,9 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { Simulation } from "@/domain/simulation/simulation.types.js";
+import {
+  Simulation,
+  SimulationStatus,
+} from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { describe, expect, it, vi } from "vitest";
@@ -16,12 +19,13 @@ function createEvent(id: string, timestampMs: number): SimulationEvent {
 
 function createSimulation(overrides?: {
   seed?: number;
+  status?: SimulationStatus;
   architectureSnapshot?: ArchitectureGraph;
 }): Simulation {
   return {
     id: "simulation-1",
     architectureId: "architecture-1",
-    status: "running",
+    status: overrides?.status ?? "created",
     config: {
       durationMs: 1000,
       requestsPerSecond: 10,
@@ -35,6 +39,7 @@ function createSimulation(overrides?: {
       nodes: [],
       edges: [],
     },
+    startedAt: new Date("2026-01-01T00:00:00Z"),
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 }
@@ -398,5 +403,195 @@ describe("SimulationEngine", () => {
     for (let i = 1; i < processedTimes.length; i++) {
       expect(processedTimes[i]!).toBeGreaterThanOrEqual(processedTimes[i - 1]!);
     }
+  });
+
+  it("should run a created simulation to completion", () => {
+    const { simulation, engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(simulation.status).toBe("completed");
+  });
+
+  it("should be running while events are being processed", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    let statusDuringRun: SimulationStatus | undefined;
+
+    eventProcessor.process.mockImplementation(() => {
+      statusDuringRun = runtime.simulation.status;
+    });
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(statusDuringRun).toBe("running");
+    expect(runtime.simulation.status).toBe("completed");
+  });
+
+  it("should throw when a completed simulation is run again", () => {
+    const { engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(() => engine.run()).toThrow(
+      "Simulation cannot be run from status completed",
+    );
+  });
+
+  it("should throw when a failed simulation is run", () => {
+    const simulation = createSimulation({ status: "failed" });
+    const runtime = new SimulationRuntime(simulation);
+    const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+    expect(() => engine.run()).toThrow(
+      "Simulation cannot be run from status failed",
+    );
+  });
+
+  it("should throw when a cancelled simulation is run", () => {
+    const simulation = createSimulation({ status: "cancelled" });
+    const runtime = new SimulationRuntime(simulation);
+    const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+    expect(() => engine.run()).toThrow(
+      "Simulation cannot be run from status cancelled",
+    );
+  });
+
+  it("should complete an empty simulation without advancing the clock", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.run();
+
+    expect(runtime.simulation.status).toBe("completed");
+    expect(runtime.currentTimeMs).toBe(0);
+  });
+
+  it("should mark the simulation as failed when the processor throws", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi.fn(() => {
+      throw new Error("Processing failed");
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.run()).toThrow("Processing failed");
+    expect(runtime.simulation.status).toBe("failed");
+  });
+
+  it("should keep the clock at the event that failed processing", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi
+      .fn()
+      .mockReturnValueOnce(undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("Processing failed");
+      });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-1", 100));
+    engine.schedule(createEvent("event-2", 200));
+
+    expect(() => engine.run()).toThrow("Processing failed");
+    expect(runtime.clock.now()).toBe(200);
+    expect(runtime.simulation.status).toBe("failed");
+  });
+
+  it("should throw when a failed simulation is run again", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi.fn(() => {
+      throw new Error("Processing failed");
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.run()).toThrow("Processing failed");
+
+    expect(() => engine.run()).toThrow(
+      "Simulation cannot be run from status failed",
+    );
+  });
+
+  it("should set startedAt when run begins", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    let startedAtDuringRun: Date | undefined;
+
+    eventProcessor.process.mockImplementation(() => {
+      startedAtDuringRun = runtime.simulation.startedAt;
+    });
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(startedAtDuringRun).toBeInstanceOf(Date);
+    expect(Number.isNaN(startedAtDuringRun?.getTime())).toBe(false);
+  });
+
+  it("should set completedAt when the simulation completes", () => {
+    const { simulation, engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(simulation.completedAt?.getTime())).toBe(false);
+  });
+
+  it("should set completedAt when processing fails", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi.fn(() => {
+      throw new Error("Processing failed");
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.run()).toThrow("Processing failed");
+    expect(runtime.simulation.status).toBe("failed");
+    expect(runtime.simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(runtime.simulation.completedAt?.getTime())).toBe(false);
+  });
+
+  it("should record startedAt before completedAt", () => {
+    vi.useFakeTimers();
+
+    try {
+      const simulation = createSimulation();
+      const runtime = new SimulationRuntime(simulation);
+      const processEvent = vi.fn().mockImplementation(() => {
+        vi.advanceTimersByTime(5);
+      });
+      const engine = new SimulationEngine(runtime, { process: processEvent });
+
+      engine.schedule(createEvent("event-a", 100));
+      engine.run();
+
+      expect(simulation.startedAt.getTime()).toBeLessThan(
+        simulation.completedAt!.getTime(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should set startedAt and completedAt for an empty simulation", () => {
+    const { simulation, engine } = createFixture();
+
+    engine.run();
+
+    expect(simulation.startedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(simulation.startedAt.getTime())).toBe(false);
+    expect(simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(simulation.completedAt?.getTime())).toBe(false);
   });
 });

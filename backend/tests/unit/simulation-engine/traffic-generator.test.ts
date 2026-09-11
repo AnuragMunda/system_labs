@@ -14,6 +14,7 @@ function createSimulation(config: Simulation["config"]): Simulation {
     currentTimeMs: 0,
     seed: 42,
     architectureSnapshot: { nodes: [], edges: [] },
+    startedAt: new Date("2026-01-01T00:00:00Z"),
     createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 }

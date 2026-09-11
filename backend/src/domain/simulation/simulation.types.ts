@@ -59,5 +59,7 @@ export interface Simulation {
 
   architectureSnapshot: ArchitectureGraph;
 
+  startedAt: Date;
+  completedAt?: Date;
   createdAt: Date;
 }
