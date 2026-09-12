@@ -594,4 +594,202 @@ describe("SimulationEngine", () => {
     expect(simulation.completedAt).toBeInstanceOf(Date);
     expect(Number.isNaN(simulation.completedAt?.getTime())).toBe(false);
   });
+
+  it("should advance the clock one event per step", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+    engine.schedule(createEvent("event-c", 300));
+
+    engine.step();
+
+    expect(runtime.clock.now()).toBe(100);
+
+    engine.step();
+
+    expect(runtime.clock.now()).toBe(200);
+  });
+
+  it("should process only a single event per step", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+    engine.schedule(createEvent("event-c", 300));
+
+    engine.step();
+
+    expect(eventProcessor.process).toHaveBeenCalledTimes(1);
+    expect(runtime.clock.now()).toBe(100);
+    expect(runtime.eventQueue.size()).toBe(2);
+  });
+
+  it("should return false when no event is eligible", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    expect(engine.step()).toBe(false);
+  });
+
+  it("should return true when an event is processed", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(engine.step()).toBe(true);
+  });
+
+  it("should not process events at or beyond the configured duration", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 1000));
+
+    expect(engine.step()).toBe(false);
+    expect(runtime.clock.now()).toBe(0);
+  });
+
+  it("should throw when stepping a created simulation", () => {
+    const { engine } = createFixture();
+
+    expect(() => engine.step()).toThrow(
+      "Simulation cannot be stepped from status created",
+    );
+  });
+
+  it("should throw when stepping a completed simulation", () => {
+    const { engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.run();
+
+    expect(() => engine.step()).toThrow(
+      "Simulation cannot be stepped from status completed",
+    );
+  });
+
+  it("should throw when stepping a failed simulation", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi.fn(() => {
+      throw new Error("Processing failed");
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.run()).toThrow("Processing failed");
+
+    expect(() => engine.step()).toThrow(
+      "Simulation cannot be stepped from status failed",
+    );
+  });
+
+  it("should report no pending events when the queue is empty", () => {
+    const { engine } = createFixture();
+
+    expect(engine.hasPendingEvents()).toBe(false);
+  });
+
+  it("should report pending events for an eligible event", () => {
+    const { engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 500));
+
+    expect(engine.hasPendingEvents()).toBe(true);
+  });
+
+  it("should report no pending events for an event at the duration boundary", () => {
+    const { engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 1000));
+
+    expect(engine.hasPendingEvents()).toBe(false);
+  });
+
+  it("should report no pending events for an event after the duration boundary", () => {
+    const { engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 1500));
+
+    expect(engine.hasPendingEvents()).toBe(false);
+  });
+
+  it("should only consider the earliest event when deciding if processing remains", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 500));
+    engine.schedule(createEvent("event-b", 1000));
+    engine.schedule(createEvent("event-c", 1500));
+
+    expect(engine.hasPendingEvents()).toBe(true);
+
+    runtime.simulation.status = "running";
+
+    engine.step();
+
+    expect(engine.hasPendingEvents()).toBe(false);
+  });
+
+  it("should complete the simulation when stepping its final event", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 500));
+
+    expect(engine.step()).toBe(true);
+    expect(runtime.simulation.status).toBe("completed");
+  });
+
+  it("should complete a boundary-only queue without processing anything", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 1000));
+
+    expect(engine.step()).toBe(false);
+    expect(eventProcessor.process).not.toHaveBeenCalled();
+    expect(runtime.simulation.status).toBe("completed");
+  });
+
+  it("should stay running while further events remain", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+
+    engine.step();
+
+    expect(runtime.simulation.status).toBe("running");
+
+    engine.step();
+
+    expect(runtime.simulation.status).toBe("completed");
+  });
+
+  it("should set completedAt when the final event completes the simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 500));
+
+    engine.step();
+
+    expect(runtime.simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(runtime.simulation.completedAt?.getTime())).toBe(false);
+  });
 });

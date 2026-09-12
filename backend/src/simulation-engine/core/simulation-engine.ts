@@ -44,25 +44,8 @@ export class SimulationEngine {
     this.runtime.simulation.startedAt = new Date();
 
     try {
-      while (!this.runtime.eventQueue.isEmpty()) {
-        const nextEvent = this.runtime.eventQueue.peek();
-
-        if (
-          !nextEvent ||
-          nextEvent.timestampMs >= this.runtime.simulation.config.durationMs
-        ) {
-          break;
-        }
-
-        const event = this.runtime.eventQueue.dequeue();
-
-        if (!event) {
-          break;
-        }
-
-        this.runtime.clock.advanceTo(event.timestampMs);
-
-        this.eventProcessor.process(event);
+      while (this.processNextEvent()) {
+        // Keep processing until there is no eligible event.
       }
 
       this.runtime.simulation.status = "completed";
@@ -73,5 +56,71 @@ export class SimulationEngine {
 
       throw error;
     }
+  }
+
+  /**
+   * Processes the next eligible event in the queue — advancing the clock to
+   * its timestamp and invoking the processor — leaving the simulation
+   * otherwise in place. Returns `true` when an event was processed and
+   * `false` when nothing eligible remains in the queue.
+   *
+   * @throws If the simulation is not currently `running`.
+   */
+  step(): boolean {
+    if (this.runtime.simulation.status !== "running") {
+      throw new Error(
+        `Simulation cannot be stepped from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    if (!this.hasPendingEvents()) {
+      this.runtime.simulation.status = "completed";
+      this.runtime.simulation.completedAt = new Date();
+
+      return false;
+    }
+
+    this.processNextEvent();
+
+    if (!this.hasPendingEvents()) {
+      this.runtime.simulation.status = "completed";
+      this.runtime.simulation.completedAt = new Date();
+    }
+
+    return true;
+  }
+
+  /** Returns true when an event eligible for processing remains in the queue. */
+  hasPendingEvents(): boolean {
+    const nextEvent = this.runtime.eventQueue.peek();
+
+    if (!nextEvent) {
+      return false;
+    }
+
+    return nextEvent.timestampMs < this.runtime.simulation.config.durationMs;
+  }
+
+  /**
+   * Processes the single earliest eligible event from the queue. An event is
+   * eligible when one exists and its timestamp is earlier than the configured
+   * simulation duration. Returns `true` once an event was advanced to and
+   * processed.
+   */
+  private processNextEvent(): boolean {
+    if (!this.hasPendingEvents()) {
+      return false;
+    }
+
+    const event = this.runtime.eventQueue.dequeue();
+
+    if (!event) {
+      return false;
+    }
+
+    this.runtime.clock.advanceTo(event.timestampMs);
+    this.eventProcessor.process(event);
+
+    return true;
   }
 }
