@@ -792,4 +792,162 @@ describe("SimulationEngine", () => {
     expect(runtime.simulation.completedAt).toBeInstanceOf(Date);
     expect(Number.isNaN(runtime.simulation.completedAt?.getTime())).toBe(false);
   });
+
+  it("should pause a running simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.pause();
+
+    expect(runtime.simulation.status).toBe("paused");
+  });
+
+  it("should resume a paused simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.pause();
+
+    expect(runtime.simulation.status).toBe("paused");
+
+    engine.resume();
+
+    expect(runtime.simulation.status).toBe("running");
+  });
+
+  it("should cancel a running simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.cancel();
+
+    expect(runtime.simulation.status).toBe("cancelled");
+  });
+
+  it("should cancel a paused simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.pause();
+    engine.cancel();
+
+    expect(runtime.simulation.status).toBe("cancelled");
+  });
+
+  it.each(["created", "completed", "failed", "cancelled", "paused"] as const)(
+    "should throw when pausing a %s simulation",
+    (status) => {
+      const simulation = createSimulation({ status });
+      const runtime = new SimulationRuntime(simulation);
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+      expect(() => engine.pause()).toThrow(
+        `Simulation cannot be paused from status ${status}`,
+      );
+    },
+  );
+
+  it.each(["created", "running", "completed", "failed", "cancelled"] as const)(
+    "should throw when resuming a %s simulation",
+    (status) => {
+      const simulation = createSimulation({ status });
+      const runtime = new SimulationRuntime(simulation);
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+      expect(() => engine.resume()).toThrow(
+        `Simulation cannot be resumed from status ${status}`,
+      );
+    },
+  );
+
+  it.each(["created", "completed", "failed", "cancelled"] as const)(
+    "should throw when cancelling a %s simulation",
+    (status) => {
+      const simulation = createSimulation({ status });
+      const runtime = new SimulationRuntime(simulation);
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+      expect(() => engine.cancel()).toThrow(
+        `Simulation cannot be cancelled from status ${status}`,
+      );
+    },
+  );
+
+  it("should throw when stepping a paused simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.pause();
+
+    expect(() => engine.step()).toThrow(
+      "Simulation cannot be stepped from status paused",
+    );
+  });
+
+  it("should throw when stepping a cancelled simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.cancel();
+
+    expect(() => engine.step()).toThrow(
+      "Simulation cannot be stepped from status cancelled",
+    );
+  });
+
+  it("should record completedAt when cancelled from running", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.cancel();
+
+    expect(runtime.simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(runtime.simulation.completedAt?.getTime())).toBe(false);
+  });
+
+  it("should record completedAt when cancelled from paused", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.pause();
+    engine.cancel();
+
+    expect(runtime.simulation.completedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(runtime.simulation.completedAt?.getTime())).toBe(false);
+  });
+
+  it("should preserve the event queue when a simulation is paused", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+
+    engine.pause();
+
+    expect(runtime.eventQueue.size()).toBe(2);
+  });
+
+  it("should preserve the event queue when a simulation is cancelled", () => {
+    const { runtime, engine } = createFixture();
+
+    runtime.simulation.status = "running";
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+
+    engine.cancel();
+
+    expect(runtime.eventQueue.size()).toBe(2);
+    expect(runtime.eventQueue.peek()?.timestampMs).toBe(100);
+  });
 });

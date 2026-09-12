@@ -101,6 +101,46 @@ export class SimulationEngine {
     return nextEvent.timestampMs < this.runtime.simulation.config.durationMs;
   }
 
+  /** Pauses a running simulation, halting further event processing. */
+  pause(): void {
+    if (this.runtime.simulation.status !== "running") {
+      throw new Error(
+        `Simulation cannot be paused from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.runtime.simulation.status = "paused";
+  }
+
+  /** Resumes a paused simulation so event processing can continue. */
+  resume(): void {
+    if (this.runtime.simulation.status !== "paused") {
+      throw new Error(
+        `Simulation cannot be resumed from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.runtime.simulation.status = "running";
+  }
+
+  /**
+   * Cancels a running or paused simulation, marking it cancelled and
+   * recording when it ended.
+   */
+  cancel(): void {
+    if (
+      this.runtime.simulation.status !== "running" &&
+      this.runtime.simulation.status !== "paused"
+    ) {
+      throw new Error(
+        `Simulation cannot be cancelled from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.runtime.simulation.status = "cancelled";
+    this.runtime.simulation.completedAt = new Date();
+  }
+
   /**
    * Processes the single earliest eligible event from the queue. An event is
    * eligible when one exists and its timestamp is earlier than the configured
