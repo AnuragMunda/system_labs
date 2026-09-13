@@ -28,7 +28,11 @@ function setup(
   sourceNodeId: string;
 } {
   const runtime = new SimulationRuntime(createSimulation(config));
-  const engine = new SimulationEngine(runtime, { process: vi.fn() });
+  const engine = new SimulationEngine(
+    runtime,
+    { process: vi.fn() },
+    new TrafficGenerator(runtime),
+  );
   const generator = new TrafficGenerator(runtime, engine);
 
   return { runtime, generator, sourceNodeId };

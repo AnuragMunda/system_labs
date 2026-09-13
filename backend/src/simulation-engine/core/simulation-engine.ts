@@ -10,6 +10,7 @@
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { EventProcessor } from "../types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
+import { TrafficGenerator } from "./traffic-generator.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its
@@ -21,6 +22,7 @@ export class SimulationEngine {
   constructor(
     private readonly runtime: SimulationRuntime,
     private readonly eventProcessor: EventProcessor,
+    private readonly trafficGenerator: TrafficGenerator,
   ) {}
 
   /** Queues an event onto the runtime for future processing. */
@@ -144,6 +146,24 @@ export class SimulationEngine {
 
     this.runtime.simulation.status = "cancelled";
     this.runtime.simulation.completedAt = new Date();
+  }
+
+  /**
+   * Pre-generates the simulation's initial request load for the given source
+   * node, delegating to the traffic generator. It must be called while the
+   * simulation is still `created`: it only populates the runtime's requests
+   * and event queue and does not advance the clock or change the status.
+   *
+   * @throws If the simulation is not currently `created`.
+   */
+  initializeTraffic(sourceNodeId: string): void {
+    if (this.runtime.simulation.status !== "created") {
+      throw new Error(
+        `Traffic cannot be initialized from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.trafficGenerator.generate(sourceNodeId);
   }
 
   /**

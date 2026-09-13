@@ -1,5 +1,6 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
+import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
@@ -1055,7 +1056,11 @@ describe("error rate failure lifecycle", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     runtime.createRequest({
       id: "request-1",
@@ -1333,7 +1338,11 @@ describe("error rate failure lifecycle", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     // Failed attempts must never increment the component's active count.
     const incrementSpy = vi.spyOn(runtime, "incrementActiveRequests");
@@ -1379,7 +1388,11 @@ describe("error rate failure lifecycle", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     // Attempt 1 fails, the retry succeeds.
     vi.spyOn(runtime.random, "next")
@@ -1430,7 +1443,11 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
   it("should route a request through Client → API → Database and complete it", () => {
     const runtime = new SimulationRuntime(createSimulation());
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     const processed: { type: SimulationEvent["type"]; target?: string }[] = [];
 
@@ -1475,7 +1492,11 @@ describe("request queueing", () => {
   it("should queue a request instead of failing at capacity", () => {
     const runtime = new SimulationRuntime(createSimulation(queueGraph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     const eventTypes: string[] = [];
 
@@ -1574,7 +1595,11 @@ describe("request queueing", () => {
   it("should process three requests in FIFO order", () => {
     const runtime = new SimulationRuntime(createSimulation(queueGraph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     const completed: string[] = [];
 
@@ -1626,7 +1651,11 @@ describe("request queueing", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     // effectiveConcurrency = 2 replicas * 2 concurrency = 4.
     for (const id of ["A", "B", "C", "D", "E"]) {
@@ -1673,7 +1702,11 @@ describe("request queueing", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     // All random rolls produce failures (0.4 < errorRate 1.0).
     vi.spyOn(runtime.random, "next").mockReturnValue(0.4);
@@ -1736,7 +1769,11 @@ describe("request queueing", () => {
 
     const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
-    const engine = new SimulationEngine(runtime, processor);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
 
     const effectiveConcurrency = runtime.getEffectiveConcurrency("api");
 

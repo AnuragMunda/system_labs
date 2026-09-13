@@ -8,7 +8,6 @@
  */
 
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
-import { SimulationEngine } from "./simulation-engine.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
 
 /**
@@ -18,10 +17,7 @@ import { SimulationRuntime } from "./simulation-runtime.js";
  * owning any simulation state itself.
  */
 export class TrafficGenerator {
-  constructor(
-    private readonly runtime: SimulationRuntime,
-    private readonly engine: SimulationEngine,
-  ) {}
+  constructor(private readonly runtime: SimulationRuntime) {}
 
   /**
    * Generates load from the given source node for the simulation's configured
@@ -60,7 +56,7 @@ export class TrafficGenerator {
 
       this.runtime.createRequest(request);
 
-      this.engine.schedule({
+      this.runtime.schedule({
         id: this.createEventId(sequence),
         simulationId: this.runtime.simulation.id,
         timestampMs: eventTimestampMs,
