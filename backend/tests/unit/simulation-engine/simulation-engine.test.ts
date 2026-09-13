@@ -430,34 +430,34 @@ describe("SimulationEngine", () => {
     expect(runtime.simulation.status).toBe("completed");
   });
 
-  it("should throw when a completed simulation is run again", () => {
+  it("should throw when a completed simulation is started again", () => {
     const { engine } = createFixture();
 
     engine.schedule(createEvent("event-a", 100));
     engine.run();
 
     expect(() => engine.run()).toThrow(
-      "Simulation cannot be run from status completed",
+      "Simulation cannot be started from status completed",
     );
   });
 
-  it("should throw when a failed simulation is run", () => {
+  it("should throw when a failed simulation is started", () => {
     const simulation = createSimulation({ status: "failed" });
     const runtime = new SimulationRuntime(simulation);
     const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
     expect(() => engine.run()).toThrow(
-      "Simulation cannot be run from status failed",
+      "Simulation cannot be started from status failed",
     );
   });
 
-  it("should throw when a cancelled simulation is run", () => {
+  it("should throw when a cancelled simulation is started", () => {
     const simulation = createSimulation({ status: "cancelled" });
     const runtime = new SimulationRuntime(simulation);
     const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
     expect(() => engine.run()).toThrow(
-      "Simulation cannot be run from status cancelled",
+      "Simulation cannot be started from status cancelled",
     );
   });
 
@@ -516,7 +516,7 @@ describe("SimulationEngine", () => {
     expect(() => engine.run()).toThrow("Processing failed");
 
     expect(() => engine.run()).toThrow(
-      "Simulation cannot be run from status failed",
+      "Simulation cannot be started from status failed",
     );
   });
 
@@ -949,5 +949,64 @@ describe("SimulationEngine", () => {
 
     expect(runtime.eventQueue.size()).toBe(2);
     expect(runtime.eventQueue.peek()?.timestampMs).toBe(100);
+  });
+
+  it("should start a created simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.start();
+
+    expect(runtime.simulation.status).toBe("running");
+  });
+
+  it("should set startedAt when a simulation starts", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.start();
+
+    expect(runtime.simulation.startedAt).toBeInstanceOf(Date);
+    expect(Number.isNaN(runtime.simulation.startedAt.getTime())).toBe(false);
+  });
+
+  it.each(["running", "paused", "completed", "failed", "cancelled"] as const)(
+    "should throw when starting a %s simulation",
+    (status) => {
+      const simulation = createSimulation({ status });
+      const runtime = new SimulationRuntime(simulation);
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
+
+      expect(() => engine.start()).toThrow(
+        `Simulation cannot be started from status ${status}`,
+      );
+    },
+  );
+
+  it("should not process events when starting", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+
+    engine.start();
+
+    expect(eventProcessor.process).not.toHaveBeenCalled();
+    expect(runtime.eventQueue.size()).toBe(2);
+  });
+
+  it("should process only eligible events when running", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+    engine.schedule(createEvent("event-c", 1500));
+
+    engine.run();
+
+    const processedTimes = eventProcessor.process.mock.calls.map(
+      ([event]) => event.timestampMs,
+    );
+
+    expect(processedTimes).toEqual([100, 200]);
+    expect(runtime.simulation.status).toBe("completed");
   });
 });

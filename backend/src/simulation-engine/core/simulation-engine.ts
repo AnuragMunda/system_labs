@@ -34,28 +34,36 @@ export class SimulationEngine {
    * has run.
    */
   run(): void {
+    this.start();
+
+    try {
+      this.execute();
+
+      if (this.runtime.simulation.status === "running") {
+        this.complete();
+      }
+    } catch (error) {
+      this.fail();
+
+      throw error;
+    }
+  }
+
+  /**
+   * Transitions a created simulation into the `running` state and records when
+   * it started. It does not process any events.
+   *
+   * @throws If the simulation is not currently `created`.
+   */
+  start(): void {
     if (this.runtime.simulation.status !== "created") {
       throw new Error(
-        `Simulation cannot be run from status ${this.runtime.simulation.status}`,
+        `Simulation cannot be started from status ${this.runtime.simulation.status}`,
       );
     }
 
     this.runtime.simulation.status = "running";
     this.runtime.simulation.startedAt = new Date();
-
-    try {
-      while (this.processNextEvent()) {
-        // Keep processing until there is no eligible event.
-      }
-
-      this.runtime.simulation.status = "completed";
-      this.runtime.simulation.completedAt = new Date();
-    } catch (error) {
-      this.runtime.simulation.status = "failed";
-      this.runtime.simulation.completedAt = new Date();
-
-      throw error;
-    }
   }
 
   /**
@@ -74,17 +82,14 @@ export class SimulationEngine {
     }
 
     if (!this.hasPendingEvents()) {
-      this.runtime.simulation.status = "completed";
-      this.runtime.simulation.completedAt = new Date();
-
+      this.complete();
       return false;
     }
 
     this.processNextEvent();
 
     if (!this.hasPendingEvents()) {
-      this.runtime.simulation.status = "completed";
-      this.runtime.simulation.completedAt = new Date();
+      this.complete();
     }
 
     return true;
@@ -162,5 +167,29 @@ export class SimulationEngine {
     this.eventProcessor.process(event);
 
     return true;
+  }
+
+  /** Continues processing eligible events while the simulation is running. */
+  private execute(): void {
+    while (this.runtime.simulation.status === "running") {
+      // While the simulation is running, keep processing until there is no eligible event.
+      const processed = this.processNextEvent();
+
+      if (!processed) {
+        break;
+      }
+    }
+  }
+
+  /** Marks the simulation completed and records when it finished. */
+  private complete(): void {
+    this.runtime.simulation.status = "completed";
+    this.runtime.simulation.completedAt = new Date();
+  }
+
+  /** Marks the simulation failed and records when it stopped. */
+  private fail(): void {
+    this.runtime.simulation.status = "failed";
+    this.runtime.simulation.completedAt = new Date();
   }
 }
