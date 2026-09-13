@@ -1009,4 +1009,96 @@ describe("SimulationEngine", () => {
     expect(processedTimes).toEqual([100, 200]);
     expect(runtime.simulation.status).toBe("completed");
   });
+
+  it("should execute every event that shares the same timestamp", () => {
+    const { engine, eventProcessor } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 100));
+    engine.schedule(createEvent("event-c", 100));
+
+    engine.run();
+
+    const processedIds = eventProcessor.process.mock.calls.map(
+      ([event]) => event.id,
+    );
+
+    expect(processedIds).toEqual(["event-a", "event-b", "event-c"]);
+  });
+
+  it("should execute events scheduled dynamically during processing", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    let scheduled = false;
+
+    eventProcessor.process.mockImplementation((event) => {
+      if (!scheduled) {
+        scheduled = true;
+        runtime.schedule(
+          createEvent("event-scheduled-" + event.id, event.timestampMs + 150),
+        );
+      }
+    });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    engine.run();
+
+    const processedIds = eventProcessor.process.mock.calls.map(
+      ([event]) => event.id,
+    );
+
+    expect(processedIds).toEqual(["event-a", "event-scheduled-event-a"]);
+  });
+
+  it("should insert dynamically scheduled events in timestamp order", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    eventProcessor.process.mockImplementation((event) => {
+      if (event.id === "event-a") {
+        runtime.schedule(createEvent("event-c", 150));
+      }
+    });
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+
+    engine.run();
+
+    const processedTimes = eventProcessor.process.mock.calls.map(
+      ([event]) => event.timestampMs,
+    );
+
+    expect(processedTimes).toEqual([100, 150, 200]);
+  });
+
+  it("should fail the simulation when an event is scheduled in the past", () => {
+    const runtime = new SimulationRuntime(createSimulation());
+    const processEvent = vi.fn().mockImplementation(() => {
+      runtime.schedule(createEvent("event-past", 50));
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.run()).toThrow(
+      "Timestamp must be greater than current time.",
+    );
+    expect(runtime.simulation.status).toBe("failed");
+  });
+
+  it("should leave out-of-bound events in the queue after running", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 200));
+    engine.schedule(createEvent("event-c", 1000));
+    engine.schedule(createEvent("event-d", 1500));
+
+    engine.run();
+
+    expect(runtime.simulation.status).toBe("completed");
+    expect(runtime.eventQueue.size()).toBe(2);
+    expect(runtime.eventQueue.peek()?.timestampMs).toBe(1000);
+  });
 });
