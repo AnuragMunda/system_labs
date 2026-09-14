@@ -11,6 +11,7 @@ import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { EventProcessor } from "../types.js";
 import { getNetworkLatency } from "../network/network-latency.js";
 import { canRetry, DEFAULT_RETRY_DELAY_MS, shouldFail } from "../helper.js";
+import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -55,7 +56,7 @@ export class DefaultEventProcessor implements EventProcessor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Creates the request and determines its first destination
+   * Updates the newly created request and determines its first destination
    * from the architecture topology.
    */
   private handleRequestCreated(event: SimulationEvent): void {
@@ -338,6 +339,7 @@ export class DefaultEventProcessor implements EventProcessor {
 
   private routeRequest(event: SimulationEvent, sourceNodeId: string): void {
     const edges = this.runtime.topology.getOutgoingEdges(sourceNodeId);
+    const requestId = this.getRequestId(event);
 
     if (edges.length === 0) {
       this.runtime.schedule({
@@ -347,17 +349,26 @@ export class DefaultEventProcessor implements EventProcessor {
         type: "request.completed",
         sourceNodeId,
         payload: {
-          requestId: this.getRequestId(event),
+          requestId,
         },
       });
 
       return;
     }
 
-    const selectedEdge = this.runtime.routingStrategy.selectEdge(edges, {
-      sourceNodeId,
-      requestId: this.getRequestId(event),
-    });
+    let selectedEdge: ArchitectureEdge;
+
+    // Fast path: one outgoing edge means the choice is trivial — skip the
+    // strategy lookup entirely.
+    if (edges.length === 1) {
+      selectedEdge = edges[0]!;
+    } else {
+      const routingStrategy = this.runtime.getRoutingStrategy(sourceNodeId);
+      selectedEdge = routingStrategy.selectEdge(
+        edges,
+        this.runtime.getRoutingContext(sourceNodeId, requestId),
+      );
+    }
 
     const networkLatencyMs = getNetworkLatency(selectedEdge);
 
@@ -369,7 +380,7 @@ export class DefaultEventProcessor implements EventProcessor {
       sourceNodeId: selectedEdge.source,
       targetNodeId: selectedEdge.target,
       payload: {
-        requestId: this.getRequestId(event),
+        requestId,
       },
     });
   }

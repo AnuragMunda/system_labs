@@ -45,6 +45,10 @@ export type componentType =
   | "payment_provider"
   | "auth_provider";
 
+/** Supported load-balancing strategies for routing requests across a node's outgoing edges. */
+export type RoutingStrategyType =
+  "round_robin" | "random" | "least_connections";
+
 /** Autoscaling bounds for a component. */
 export interface AutoscalingConfig {
   enabled: boolean;
@@ -74,6 +78,8 @@ interface ComponentConfig {
   retryPolicy?: RetryPolicy;
   traffic?: number; // Requests per second handled
   health?: RuntimeComponentHealth;
+  /** Which load-balancing algorithm to use when this node forwards requests downstream. Defaults to round-robin if omitted. */
+  routingStrategy?: RoutingStrategyType;
 }
 
 export type RuntimeComponentHealth =

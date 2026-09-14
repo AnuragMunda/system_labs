@@ -1,6 +1,10 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
+import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
+import { RandomStrategy } from "@/simulation-engine/routing/random-strategy.js";
+import { LeastConnectionsStrategy } from "@/simulation-engine/routing/least-connections-strategy.js";
+import { RoutingStrategyType } from "@/domain/architecture/component.types.js";
 import {
   Simulation,
   SimulationStatus,
@@ -337,6 +341,65 @@ describe("SimulationRuntime", () => {
     runtime.incrementActiveRequests("api");
 
     expect(runtime.hasCapacity("api")).toBe(false);
+  });
+
+  it.each<RoutingStrategyType>(["round_robin", "random", "least_connections"])(
+    "should initialize the %s routing strategy from the node config",
+    (strategyType) => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          {
+            id: "lb",
+            type: "load_balancer",
+            name: "lb",
+            position: { x: 0, y: 0 },
+            config: { routingStrategy: strategyType },
+          },
+        ],
+        edges: [],
+      };
+
+      const runtime = new SimulationRuntime(
+        createSimulation({ architectureSnapshot: graph }),
+      );
+
+      const strategy = runtime.getRoutingStrategy("lb");
+
+      switch (strategyType) {
+        case "round_robin":
+          expect(strategy).toBeInstanceOf(RoundRobinStrategy);
+          break;
+        case "random":
+          expect(strategy).toBeInstanceOf(RandomStrategy);
+          break;
+        case "least_connections":
+          expect(strategy).toBeInstanceOf(LeastConnectionsStrategy);
+          break;
+      }
+    },
+  );
+
+  it("should throw when no routing strategy is configured for a node", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "lb",
+          type: "load_balancer",
+          name: "lb",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    const runtime = new SimulationRuntime(
+      createSimulation({ architectureSnapshot: graph }),
+    );
+
+    expect(() => runtime.getRoutingStrategy("lb")).toThrow(
+      "Routing strategy not configured for node: lb",
+    );
   });
 });
 

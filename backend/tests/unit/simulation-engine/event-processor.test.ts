@@ -703,7 +703,7 @@ describe("DefaultEventProcessor", () => {
   it("should round-robin requests across multiple outgoing connections", () => {
     const graph: ArchitectureGraph = {
       nodes: [
-        node("gateway", "load_balancer"),
+        node("gateway", "load_balancer", { routingStrategy: "round_robin" }),
         node("api-1", "api"),
         node("api-2", "api"),
       ],
@@ -761,8 +761,8 @@ describe("DefaultEventProcessor", () => {
   it("should keep separate routing state for different source nodes", () => {
     const graph: ArchitectureGraph = {
       nodes: [
-        node("gateway", "load_balancer"),
-        node("queue", "queue"),
+        node("gateway", "load_balancer", { routingStrategy: "round_robin" }),
+        node("queue", "queue", { routingStrategy: "round_robin" }),
         node("api-1", "api"),
         node("api-2", "api"),
         node("api-3", "api"),
@@ -847,7 +847,7 @@ describe("DefaultEventProcessor", () => {
   it("should apply each edge's latency when round-robin routing", () => {
     const graph: ArchitectureGraph = {
       nodes: [
-        node("gateway", "load_balancer"),
+        node("gateway", "load_balancer", { routingStrategy: "round_robin" }),
         node("api-1", "api"),
         node("api-2", "api"),
       ],
@@ -925,7 +925,7 @@ describe("DefaultEventProcessor", () => {
       currentNodeId: "api",
     });
 
-    const selectEdgeSpy = vi.spyOn(runtime.routingStrategy, "selectEdge");
+    const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
 
     // Route the request to the terminal database node: it starts processing
     // there immediately.
@@ -938,7 +938,7 @@ describe("DefaultEventProcessor", () => {
     expect(started?.type).toBe("request.processing_started");
     expect(started?.timestampMs).toBe(10);
 
-    expect(selectEdgeSpy).not.toHaveBeenCalled();
+    expect(getRoutingStrategySpy).not.toHaveBeenCalled();
 
     // Processing completes instantly (no latency) and, having no outgoing
     // edges, the database completes the request without consulting routing.
@@ -956,7 +956,109 @@ describe("DefaultEventProcessor", () => {
     expect(completed?.type).toBe("request.completed");
     expect(completed?.timestampMs).toBe(10);
 
-    expect(selectEdgeSpy).not.toHaveBeenCalled();
+    expect(getRoutingStrategySpy).not.toHaveBeenCalled();
+  });
+
+  it("should route through a load balancer via its random strategy with edge latency", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("lb", "load_balancer", { routingStrategy: "random" }),
+        node("api-1", "api"),
+        node("api-2", "api"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "lb",
+          target: "api-1",
+          config: { latencyMs: 5 },
+        },
+        {
+          id: "edge-2",
+          source: "lb",
+          target: "api-2",
+          config: { latencyMs: 15 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "lb",
+    });
+
+    // floor(0.6 * 2) = 1 → the second edge (api-2).
+    vi.spyOn(runtime.random, "next").mockReturnValue(0.6);
+
+    processor.process(createEvent("request.created", 0, "req-1", "lb"));
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed).toMatchObject({
+      type: "request.routed",
+      sourceNodeId: "lb",
+      targetNodeId: "api-2",
+      timestampMs: 15,
+      payload: { requestId: "req-1" },
+    });
+  });
+
+  it("should route to the least-connected target through a load balancer", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("lb", "load_balancer", {
+          routingStrategy: "least_connections",
+        }),
+        node("api-1", "api"),
+        node("api-2", "api"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "lb",
+          target: "api-1",
+          config: { latencyMs: 5 },
+        },
+        {
+          id: "edge-2",
+          source: "lb",
+          target: "api-2",
+          config: { latencyMs: 15 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    // api-1 is busier than api-2, so the request must head to api-2.
+    runtime.incrementActiveRequests("api-1");
+    runtime.incrementActiveRequests("api-1");
+    runtime.incrementActiveRequests("api-2");
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "lb",
+    });
+
+    processor.process(createEvent("request.created", 0, "req-1", "lb"));
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed).toMatchObject({
+      type: "request.routed",
+      sourceNodeId: "lb",
+      targetNodeId: "api-2",
+      timestampMs: 15,
+      payload: { requestId: "req-1" },
+    });
   });
 });
 
@@ -1563,6 +1665,35 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     expect(request.status).toBe("completed");
     expect(request.currentNodeId).toBe("api");
     expect(runtime.currentTimeMs).toBe(10);
+  });
+
+  it("should traverse single-edge hops without a routing strategy configured", () => {
+    // The default graph (client -> api -> database) has exactly one edge per
+    // node and no routingStrategy configured anywhere.
+    const runtime = new SimulationRuntime(createSimulation());
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
+
+    const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+    });
+
+    engine.schedule(createEvent("request.created", 0, "req-1", "client"));
+    engine.run();
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+    // A node with a single outgoing edge picks it directly — no strategy lookup.
+    expect(getRoutingStrategySpy).not.toHaveBeenCalled();
   });
 });
 

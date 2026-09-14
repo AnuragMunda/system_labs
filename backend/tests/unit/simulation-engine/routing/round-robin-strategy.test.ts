@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
+import { SimulationRandom } from "@/simulation-engine/random/simulation-random.js";
+import { RoutingContext } from "@/simulation-engine/routing/routing-context.js";
 
 describe("RoundRobinStrategy", () => {
   const edges: ArchitectureEdge[] = [
@@ -24,9 +26,11 @@ describe("RoundRobinStrategy", () => {
     },
   ];
 
-  const context = {
+  const context: RoutingContext = {
     sourceNodeId: "gateway",
     requestId: "request-1",
+    random: new SimulationRandom(42),
+    getActiveRequestCount: () => 0,
   };
 
   it("selects edges in round-robin order", () => {
@@ -58,9 +62,11 @@ describe("RoundRobinStrategy", () => {
   it("maintains independent positions for different source nodes", () => {
     const strategy = new RoundRobinStrategy();
 
-    const anotherContext = {
+    const anotherContext: RoutingContext = {
       sourceNodeId: "another-gateway",
       requestId: "request-2",
+      random: new SimulationRandom(42),
+      getActiveRequestCount: () => 0,
     };
 
     expect(strategy.selectEdge(edges, context).id).toBe("edge-1");

@@ -14,11 +14,12 @@ import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
 import { ArchitectureTopology } from "../topology/architecture-topology.js";
 import { ComponentRuntimeState } from "../components/component-runtime-state.js";
-import { RoundRobinStrategy } from "../routing/round-robin-strategy.js";
 import type { RoutingStrategy } from "../routing/routing-strategy.js";
 import { SimulationRandom } from "../random/simulation-random.js";
 import { getEffectiveConcurrency } from "../helper.js";
 import { ComponentRequestQueue } from "../capacity/component-request-queue.js";
+import { createRoutingStrategy } from "../routing/routing-strategy.factory.js";
+import type { RoutingContext } from "../routing/routing-context.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -32,20 +33,20 @@ export class SimulationRuntime {
   readonly eventQueue: EventQueue = new EventQueue();
   readonly componentRequestQueue: ComponentRequestQueue =
     new ComponentRequestQueue();
-  routingStrategy: RoutingStrategy = new RoundRobinStrategy();
   readonly random: SimulationRandom;
 
   private readonly requests = new Map<string, SimulationRequest>();
   private readonly components = new Map<string, ComponentRuntimeState>();
+  private readonly routingStrategies = new Map<string, RoutingStrategy>();
 
   constructor(simulation: Simulation) {
     this.simulation = simulation;
-    this.routingStrategy = new RoundRobinStrategy();
     this.random = new SimulationRandom(simulation.seed);
 
     this.topology = new ArchitectureTopology(simulation.architectureSnapshot);
 
     this.initializeComponents();
+    this.initializeRoutingStrategies();
   }
 
   /** Queues an event for future processing by the engine. */
@@ -150,7 +151,8 @@ export class SimulationRuntime {
   }
 
   /**
-   * Gets active request count for a node.
+   * Returns the number of active (in-flight) requests for a node, or `0` if
+   * the node has no runtime state.
    */
   getActiveRequestCount(nodeId: string): number {
     return this.components.get(nodeId)?.activeRequests ?? 0;
@@ -183,6 +185,38 @@ export class SimulationRuntime {
     const effectiveConcurrency = this.getEffectiveConcurrency(nodeId);
 
     return activeRequests < effectiveConcurrency;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ROUTING
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the routing strategy configured for a node, or throws if none is
+   * configured.
+   */
+  getRoutingStrategy(nodeId: string): RoutingStrategy {
+    const strategy = this.routingStrategies.get(nodeId);
+
+    if (!strategy) {
+      throw new Error(`Routing strategy not configured for node: ${nodeId}`);
+    }
+
+    return strategy;
+  }
+
+  /**
+   * Builds a {@link RoutingContext} for a given source node and request,
+   * supplying the shared RNG and the active-request-count lookup.
+   */
+  getRoutingContext(sourceNodeId: string, requestId: string): RoutingContext {
+    return {
+      sourceNodeId,
+      requestId,
+      random: this.random,
+      getActiveRequestCount: (nodeId: string) =>
+        this.getActiveRequestCount(nodeId),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -223,17 +257,35 @@ export class SimulationRuntime {
     }
   }
 
+  /**
+   * Creates a {@link RoutingStrategy} instance for every node that declares a
+   * `routingStrategy` in its config.
+   */
+  private initializeRoutingStrategies(): void {
+    this.routingStrategies.clear();
+
+    for (const node of this.simulation.architectureSnapshot.nodes) {
+      const strategyType = node.config.routingStrategy;
+
+      if (!strategyType) {
+        continue;
+      }
+
+      this.routingStrategies.set(node.id, createRoutingStrategy(strategyType));
+    }
+  }
+
   /** Resets the simulation runtime to its initial state. */
   reset(): void {
     this.clock.reset();
     this.eventQueue.clear();
 
-    this.routingStrategy = new RoundRobinStrategy();
-
     this.requests.clear();
     this.components.clear();
     this.componentRequestQueue.clear();
+    this.routingStrategies.clear();
 
     this.initializeComponents();
+    this.initializeRoutingStrategies();
   }
 }
