@@ -117,12 +117,19 @@ function createRuntime(
 }
 
 describe("DefaultEventProcessor", () => {
-  it("should create a pending request and schedule its first route on request.created", () => {
+  it("should validate the pre-existing request and schedule its first route on request.created", () => {
     const { runtime, processor } = createRuntime();
 
-    const event = createEvent("request.created", 0, "req-1", "client");
+    // The request is created by the traffic generator before the event fires.
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+    });
 
-    processor.process(event);
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
 
     expect(runtime.currentTimeMs).toBe(0);
 
@@ -134,6 +141,7 @@ describe("DefaultEventProcessor", () => {
     expect(scheduled?.targetNodeId).toBe("api");
     expect(scheduled?.payload?.requestId).toBe("req-1");
 
+    // Only the current node is recorded; the request is not re-created.
     const request = runtime.getRequest("req-1");
 
     expect(request.status).toBe("pending");
@@ -141,7 +149,16 @@ describe("DefaultEventProcessor", () => {
     expect(request.currentNodeId).toBe("client");
   });
 
-  it("should move a request and schedule the next hop on request.routed", () => {
+  it("should throw when the request does not yet exist on request.created", () => {
+    const { processor } = createRuntime();
+
+    // No createRequest: the traffic generator owns request creation.
+    expect(() =>
+      processor.process(createEvent("request.created", 0, "req-1", "client")),
+    ).toThrowError("Request not found req-1");
+  });
+
+  it("should mark a request in-flight and schedule processing on request.routed", () => {
     const { runtime, processor } = createRuntime();
 
     runtime.createRequest({
@@ -158,10 +175,12 @@ describe("DefaultEventProcessor", () => {
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    expect(scheduled?.type).toBe("request.routed");
-    // The next hop is offset 10ms from the routed event's own timestamp.
-    expect(scheduled?.timestampMs).toBe(20);
-    expect(scheduled?.targetNodeId).toBe("database");
+    expect(scheduled?.type).toBe("request.processing_started");
+    // Processing begins as soon as the request arrives — no extra latency.
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.sourceNodeId).toBe("api");
+    expect(scheduled?.targetNodeId).toBe("api");
+    expect(scheduled?.payload?.requestId).toBe("req-1");
 
     const request = runtime.getRequest("req-1");
 
@@ -169,72 +188,10 @@ describe("DefaultEventProcessor", () => {
     expect(request.currentNodeId).toBe("api");
   });
 
-  it("should schedule the next hop using the edge latency on request.routed", () => {
-    const graph: ArchitectureGraph = {
-      nodes: [
-        node("client", "client"),
-        node("api", "api"),
-        node("database", "database"),
-      ],
-      edges: [
-        {
-          id: "edge-1",
-          source: "client",
-          target: "api",
-          config: { latencyMs: 25 },
-        },
-        {
-          id: "edge-2",
-          source: "api",
-          target: "database",
-          config: { latencyMs: 5 },
-        },
-      ],
-    };
-
-    const { runtime, processor } = createRuntime(graph);
-
-    runtime.createRequest({
-      id: "req-1",
-      status: "pending",
-      createdAtMs: 0,
-      attempts: 0,
-      currentNodeId: "client",
-    });
-
-    processor.process(
-      createEvent("request.routed", 10, "req-1", "client", "api"),
-    );
-
-    const scheduled = runtime.eventQueue.dequeue();
-
-    expect(scheduled?.type).toBe("request.routed");
-    // The request arrives at api at 10ms; edge api->database latency is 5ms.
-    expect(scheduled?.timestampMs).toBe(15);
-    expect(scheduled?.targetNodeId).toBe("database");
-  });
-
   it("should apply the default network latency when the edge has no latency", () => {
     const graph: ArchitectureGraph = {
-      nodes: [
-        node("client", "client"),
-        node("api", "api"),
-        node("database", "database"),
-      ],
-      edges: [
-        {
-          id: "edge-1",
-          source: "client",
-          target: "api",
-          config: { latencyMs: 7 },
-        },
-        {
-          id: "edge-2",
-          source: "api",
-          target: "database",
-          config: {},
-        },
-      ],
+      nodes: [node("client", "client"), node("api", "api")],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
     };
 
     const { runtime, processor } = createRuntime(graph);
@@ -247,16 +204,14 @@ describe("DefaultEventProcessor", () => {
       currentNodeId: "client",
     });
 
-    processor.process(
-      createEvent("request.routed", 10, "req-1", "client", "api"),
-    );
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    // Edge api->database has no latency configured, so the 10ms default applies.
+    // Edge client->api has no latency configured, so the 10ms default applies.
     expect(scheduled?.type).toBe("request.routed");
-    expect(scheduled?.timestampMs).toBe(20);
-    expect(scheduled?.targetNodeId).toBe("database");
+    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.targetNodeId).toBe("api");
   });
 
   it("should apply network latency after processing completes on the next hop", () => {
@@ -787,12 +742,8 @@ describe("DefaultEventProcessor", () => {
 
     // Route two requests from the gateway; each should take the next edge in
     // round-robin order without a routing policy failure.
-    processor.process(
-      createEvent("request.routed", 10, "req-1", "gateway", "gateway"),
-    );
-    processor.process(
-      createEvent("request.routed", 10, "req-2", "gateway", "gateway"),
-    );
+    processor.process(createEvent("request.created", 10, "req-1", "gateway"));
+    processor.process(createEvent("request.created", 10, "req-2", "gateway"));
 
     const first = runtime.eventQueue.dequeue();
 
@@ -878,24 +829,16 @@ describe("DefaultEventProcessor", () => {
 
     // Gateway routes its first request, then queue routes its first. Their
     // counters must advance independently and not interfere.
-    processor.process(
-      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
-    );
-    processor.process(
-      createEvent("request.routed", 0, "req-2", "queue", "queue"),
-    );
+    processor.process(createEvent("request.created", 0, "req-1", "gateway"));
+    processor.process(createEvent("request.created", 0, "req-2", "queue"));
 
     expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("api-1");
     expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("worker-1");
 
     // Second round: gateway still advances its own position to api-2 while
     // queue stays on its own worker-2.
-    processor.process(
-      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
-    );
-    processor.process(
-      createEvent("request.routed", 0, "req-2", "queue", "queue"),
-    );
+    processor.process(createEvent("request.created", 0, "req-1", "gateway"));
+    processor.process(createEvent("request.created", 0, "req-2", "queue"));
 
     expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("api-2");
     expect(runtime.eventQueue.dequeue()?.targetNodeId).toBe("worker-2");
@@ -934,9 +877,7 @@ describe("DefaultEventProcessor", () => {
       attempts: 0,
       currentNodeId: "gateway",
     });
-    processor.process(
-      createEvent("request.routed", 0, "req-1", "gateway", "gateway"),
-    );
+    processor.process(createEvent("request.created", 0, "req-1", "gateway"));
 
     const first = runtime.eventQueue.dequeue();
 
@@ -952,9 +893,7 @@ describe("DefaultEventProcessor", () => {
       attempts: 0,
       currentNodeId: "gateway",
     });
-    processor.process(
-      createEvent("request.routed", 0, "req-2", "gateway", "gateway"),
-    );
+    processor.process(createEvent("request.created", 0, "req-2", "gateway"));
 
     const second = runtime.eventQueue.dequeue();
 
@@ -988,17 +927,34 @@ describe("DefaultEventProcessor", () => {
 
     const selectEdgeSpy = vi.spyOn(runtime.routingStrategy, "selectEdge");
 
-    // Route the request to the terminal database node.
+    // Route the request to the terminal database node: it starts processing
+    // there immediately.
     processor.process(
       createEvent("request.routed", 10, "req-1", "api", "database"),
     );
 
-    // The terminal node has no outgoing edges, so the request completes and
-    // the routing strategy must not be consulted.
-    const scheduled = runtime.eventQueue.dequeue();
+    const started = runtime.eventQueue.dequeue();
 
-    expect(scheduled?.type).toBe("request.completed");
-    expect(scheduled?.timestampMs).toBe(10);
+    expect(started?.type).toBe("request.processing_started");
+    expect(started?.timestampMs).toBe(10);
+
+    expect(selectEdgeSpy).not.toHaveBeenCalled();
+
+    // Processing completes instantly (no latency) and, having no outgoing
+    // edges, the database completes the request without consulting routing.
+    processor.process(started!);
+
+    const processingCompleted = runtime.eventQueue.dequeue();
+
+    expect(processingCompleted?.type).toBe("request.processing_completed");
+    expect(processingCompleted?.timestampMs).toBe(10);
+
+    processor.process(processingCompleted!);
+
+    const completed = runtime.eventQueue.dequeue();
+
+    expect(completed?.type).toBe("request.completed");
+    expect(completed?.timestampMs).toBe(10);
 
     expect(selectEdgeSpy).not.toHaveBeenCalled();
   });
@@ -1133,11 +1089,34 @@ describe("error rate failure lifecycle", () => {
     expect(routed?.type).toBe("request.routed");
     expect(routed?.targetNodeId).toBe("database");
 
+    // Arriving at the database starts processing immediately...
     processor.process(routed!);
+
+    const startedDatabase = runtime.eventQueue.dequeue();
+
+    expect(startedDatabase).toMatchObject({
+      type: "request.processing_started",
+      timestampMs: 35,
+      sourceNodeId: "database",
+    });
+
+    processor.process(startedDatabase!);
+
+    // ...which, with no latency, completes at the same timestamp.
+    const completedDatabase = runtime.eventQueue.dequeue();
+
+    expect(completedDatabase).toMatchObject({
+      type: "request.processing_completed",
+      timestampMs: 35,
+    });
+
+    // A terminal node completes the request after processing.
+    processor.process(completedDatabase!);
 
     const completed = runtime.eventQueue.dequeue();
 
     expect(completed?.type).toBe("request.completed");
+    expect(completed?.timestampMs).toBe(35);
 
     processor.process(completed!);
 
@@ -1440,8 +1419,32 @@ describe("error rate failure lifecycle", () => {
 });
 
 describe("SimulationEngine with DefaultEventProcessor", () => {
-  it("should route a request through Client → API → Database and complete it", () => {
-    const runtime = new SimulationRuntime(createSimulation());
+  it("should process a request through Client → API → Database and complete it", () => {
+    // The user-facing pipeline: client --10ms--> api --20ms--> database, with
+    // 15ms of processing at api and 5ms at database.
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 15 }),
+        node("database", "database", { latencyMs: 5 }),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 10 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 20 },
+        },
+      ],
+    };
+
+    const runtime = new SimulationRuntime(createSimulation(graph));
     const processor = new DefaultEventProcessor(runtime);
     const engine = new SimulationEngine(
       runtime,
@@ -1449,11 +1452,28 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       new TrafficGenerator(runtime),
     );
 
-    const processed: { type: SimulationEvent["type"]; target?: string }[] = [];
+    // The traffic generator creates the request before request.created fires.
+    runtime.createRequest({
+      id: "req-1",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+    });
+
+    const processed: {
+      type: SimulationEvent["type"];
+      target?: string;
+      timestampMs: number;
+    }[] = [];
 
     const originalProcess = processor.process.bind(processor);
     processor.process = (event) => {
-      processed.push({ type: event.type, target: event.targetNodeId });
+      processed.push({
+        type: event.type,
+        target: event.targetNodeId,
+        timestampMs: event.timestampMs,
+      });
       originalProcess(event);
     };
 
@@ -1462,10 +1482,30 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     engine.run();
 
     expect(processed).toEqual([
-      { type: "request.created", target: undefined },
-      { type: "request.routed", target: "api" },
-      { type: "request.routed", target: "database" },
-      { type: "request.completed", target: undefined },
+      { type: "request.created", target: undefined, timestampMs: 0 },
+      { type: "request.routed", target: "api", timestampMs: 10 },
+      {
+        type: "request.processing_started",
+        target: "api",
+        timestampMs: 10,
+      },
+      {
+        type: "request.processing_completed",
+        target: undefined,
+        timestampMs: 25,
+      },
+      { type: "request.routed", target: "database", timestampMs: 45 },
+      {
+        type: "request.processing_started",
+        target: "database",
+        timestampMs: 45,
+      },
+      {
+        type: "request.processing_completed",
+        target: undefined,
+        timestampMs: 50,
+      },
+      { type: "request.completed", target: undefined, timestampMs: 50 },
     ]);
 
     expect(runtime.eventQueue.isEmpty()).toBe(true);
@@ -1475,8 +1515,54 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     expect(request.status).toBe("completed");
     expect(request.currentNodeId).toBe("database");
     expect(request.createdAtMs).toBe(0);
-    expect(request.completedAtMs).toBe(20);
-    expect(runtime.currentTimeMs).toBe(20);
+    expect(request.completedAtMs).toBe(50);
+    expect(request.attempts).toBe(2);
+    expect(runtime.currentTimeMs).toBe(50);
+  });
+
+  it("should complete requests created and processed via initializeTraffic", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("api", "api")],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 10 },
+        },
+      ],
+    };
+
+    // One request arrives at t=0: the arrival interval (1000/50 = 20ms) equals
+    // the duration, and the endpoint is exclusive, so exactly one request.created
+    // event is emitted — leaving the full 10ms pipeline inside the duration.
+    const simulation = createSimulation(graph, 42);
+    simulation.config = {
+      ...simulation.config,
+      requestsPerSecond: 50,
+      durationMs: 20,
+    };
+
+    const runtime = new SimulationRuntime(simulation);
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+    );
+
+    // The traffic generator populates the request, and the processor then
+    // consumes the request.created event it scheduled — Change 1 end-to-end.
+    engine.initializeTraffic("client");
+    engine.run();
+
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+
+    const request = runtime.getRequest("simulation-1:request:0");
+
+    expect(request.status).toBe("completed");
+    expect(request.currentNodeId).toBe("api");
+    expect(runtime.currentTimeMs).toBe(10);
   });
 });
 

@@ -65,12 +65,10 @@ export class DefaultEventProcessor implements EventProcessor {
       throw new Error("request.created event requires a sourceNodeId.");
     }
 
-    this.runtime.createRequest({
-      id: requestId,
-      status: "pending",
-      createdAtMs: event.timestampMs,
+    this.runtime.getRequest(requestId);
+
+    this.runtime.updateRequest(requestId, {
       currentNodeId: event.sourceNodeId,
-      attempts: 0,
     });
 
     this.routeRequest(event, event.sourceNodeId);
@@ -96,7 +94,17 @@ export class DefaultEventProcessor implements EventProcessor {
       currentNodeId: event.targetNodeId,
     });
 
-    this.routeRequest(event, event.targetNodeId);
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs,
+      type: "request.processing_started",
+      sourceNodeId: event.targetNodeId,
+      targetNodeId: event.targetNodeId,
+      payload: {
+        requestId,
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
