@@ -1,6 +1,7 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
+import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
@@ -449,6 +450,108 @@ describe("DefaultEventProcessor", () => {
 
       expect(nextProcessing?.type).toBe("request.processing_started");
       expect(nextProcessing?.payload?.requestId).toBe("req-3");
+    });
+  });
+
+  describe("component failure lifecycle", () => {
+    it("should mark a component as failed on component.failed", () => {
+      const { runtime, processor } = createRuntime();
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+    });
+
+    it("should restore a component to healthy on component.recovered", () => {
+      const { runtime, processor } = createRuntime();
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+
+      processor.process(createEvent("component.recovered", 20, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("healthy");
+    });
+
+    it("should throw when component.failed has no sourceNodeId", () => {
+      const { processor } = createRuntime();
+
+      const event = createEvent("component.failed", 10, "req-1", "api");
+      event.sourceNodeId = undefined;
+
+      expect(() => processor.process(event)).toThrow(
+        "component.failed event requires a sourceNodeId.",
+      );
+    });
+
+    it("should throw when component.recovered has no sourceNodeId", () => {
+      const { processor } = createRuntime();
+
+      const event = createEvent("component.recovered", 10, "req-1", "api");
+      event.sourceNodeId = undefined;
+
+      expect(() => processor.process(event)).toThrow(
+        "component.recovered event requires a sourceNodeId.",
+      );
+    });
+
+    it("should fail a request processed while the component is failed", () => {
+      const { runtime, processor } = createRuntime();
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const scheduled = runtime.eventQueue.dequeue();
+
+      expect(scheduled?.type).toBe("request.failed");
+      expect(scheduled?.timestampMs).toBe(10);
+      expect(scheduled?.payload?.reason).toBe("component_failed");
+    });
+
+    it("should process requests normally again after the component recovers", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", { latencyMs: 50 }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      processor.process(createEvent("component.recovered", 20, "req-1", "api"));
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 30, "req-1", "api"),
+      );
+
+      const scheduled = runtime.eventQueue.dequeue();
+
+      expect(scheduled?.type).toBe("request.processing_completed");
+      expect(scheduled?.timestampMs).toBe(80);
+      expect(runtime.getComponent("api").activeRequests).toBe(1);
     });
   });
 
@@ -1118,6 +1221,7 @@ describe("error rate failure lifecycle", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     runtime.createRequest({
@@ -1423,6 +1527,7 @@ describe("error rate failure lifecycle", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // Failed attempts must never increment the component's active count.
@@ -1473,6 +1578,7 @@ describe("error rate failure lifecycle", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // Attempt 1 fails, the retry succeeds.
@@ -1552,6 +1658,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // The traffic generator creates the request before request.created fires.
@@ -1651,6 +1758,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // The traffic generator populates the request, and the processor then
@@ -1676,6 +1784,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
@@ -1695,6 +1804,88 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     // A node with a single outgoing edge picks it directly — no strategy lookup.
     expect(getRoutingStrategySpy).not.toHaveBeenCalled();
   });
+
+  it("should fail requests during a component failure window and recover afterwards", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 5 }),
+        node("database", "database"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 10 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 10 },
+        },
+      ],
+    };
+
+    const simulation = createSimulation(graph, 42);
+    simulation.config = {
+      ...simulation.config,
+      failures: [{ nodeId: "api", failedAtMs: 20, recoverAtMs: 40 }],
+    };
+
+    const runtime = new SimulationRuntime(simulation);
+    const processor = new DefaultEventProcessor(runtime);
+    const engine = new SimulationEngine(
+      runtime,
+      processor,
+      new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
+    );
+
+    engine.initializeFailures();
+
+    // req-1 completes through api before the failure; req-2 is routed into api
+    // during the failure window; req-3 arrives after api has recovered.
+    for (const request of [
+      { id: "req-1", createdAtMs: 0 },
+      { id: "req-2", createdAtMs: 15 },
+      { id: "req-3", createdAtMs: 45 },
+    ]) {
+      runtime.createRequest({
+        id: request.id,
+        status: "pending",
+        createdAtMs: request.createdAtMs,
+        attempts: 0,
+        currentNodeId: "client",
+      });
+
+      engine.schedule(
+        createEvent(
+          "request.created",
+          request.createdAtMs,
+          request.id,
+          "client",
+        ),
+      );
+    }
+
+    engine.run();
+
+    // req-1: created t=0 → api t=10 (healthy) → done t=25 before failure hits.
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+    expect(runtime.getRequest("req-1").completedAtMs).toBe(25);
+
+    // req-2: routed to api at t=25, inside the failure window → failed.
+    expect(runtime.getRequest("req-2").status).toBe("failed");
+    expect(runtime.getRequest("req-2").failedAtMs).toBe(25);
+
+    // req-3: routed to api at t=55, after recovery at t=40 → completes.
+    expect(runtime.getRequest("req-3").status).toBe("completed");
+    expect(runtime.getRequest("req-3").completedAtMs).toBe(70);
+
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+  });
 });
 
 describe("request queueing", () => {
@@ -1713,6 +1904,7 @@ describe("request queueing", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     const eventTypes: string[] = [];
@@ -1816,6 +2008,7 @@ describe("request queueing", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     const completed: string[] = [];
@@ -1872,6 +2065,7 @@ describe("request queueing", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // effectiveConcurrency = 2 replicas * 2 concurrency = 4.
@@ -1923,6 +2117,7 @@ describe("request queueing", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     // All random rolls produce failures (0.4 < errorRate 1.0).
@@ -1990,6 +2185,7 @@ describe("request queueing", () => {
       runtime,
       processor,
       new TrafficGenerator(runtime),
+      new FailureScheduler(runtime),
     );
 
     const effectiveConcurrency = runtime.getEffectiveConcurrency("api");

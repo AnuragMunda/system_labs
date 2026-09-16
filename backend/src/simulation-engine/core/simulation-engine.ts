@@ -11,6 +11,7 @@ import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { EventProcessor } from "../types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
 import { TrafficGenerator } from "./traffic-generator.js";
+import { FailureScheduler } from "./failure-scheduler.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its
@@ -23,6 +24,7 @@ export class SimulationEngine {
     private readonly runtime: SimulationRuntime,
     private readonly eventProcessor: EventProcessor,
     private readonly trafficGenerator: TrafficGenerator,
+    private readonly failureScheduler: FailureScheduler,
   ) {}
 
   /** Queues an event onto the runtime for future processing. */
@@ -164,6 +166,24 @@ export class SimulationEngine {
     }
 
     this.trafficGenerator.generate(sourceNodeId);
+  }
+
+  /**
+   * Queues the configured component failures (and recoveries) as events on the
+   * runtime. Like {@link initializeTraffic}, it must be called while the
+   * simulation is still `created`: it only populates the event queue and does
+   * not advance the clock or change the status.
+   *
+   * @throws If the simulation is not currently `created`.
+   */
+  initializeFailures(): void {
+    if (this.runtime.simulation.status !== "created") {
+      throw new Error(
+        `Failures cannot be initialized from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.failureScheduler.schedule();
   }
 
   /**

@@ -1,6 +1,7 @@
 import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
+import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { describe, expect, it, vi } from "vitest";
@@ -32,6 +33,7 @@ function setup(
     runtime,
     { process: vi.fn() },
     new TrafficGenerator(runtime),
+    new FailureScheduler(runtime),
   );
   const generator = new TrafficGenerator(runtime, engine);
 

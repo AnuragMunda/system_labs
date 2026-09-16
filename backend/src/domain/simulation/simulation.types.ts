@@ -12,6 +12,16 @@ import { ArchitectureGraph } from "../architecture/architecture.types.js";
 export type SimulationStatus =
   "created" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
+/**
+ * A scheduled component outage: the node fails at `failedAtMs` and, when
+ * `recoverAtMs` is set, returns to healthy at that later time.
+ */
+export interface FailureSchedule {
+  nodeId: string;
+  failedAtMs: number;
+  recoverAtMs?: number;
+}
+
 /** Configuration controlling how a simulation generates and plays back load. */
 export interface SimulationConfig {
   // Total simulation duration.
@@ -41,6 +51,9 @@ export interface SimulationConfig {
 
   // Emit simulation events for replay and visualization.
   emitEvents: boolean;
+
+  // Scheduled component failures and recoveries applied during the run.
+  failures?: FailureSchedule[];
 }
 
 /**

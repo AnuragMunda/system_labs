@@ -46,6 +46,14 @@ export class DefaultEventProcessor implements EventProcessor {
         this.handleRequestRetry(event);
         break;
 
+      case "component.failed":
+        this.handleComponentFailed(event);
+        break;
+
+      case "component.recovered":
+        this.handleComponentRecovered(event);
+        break;
+
       default:
         break;
     }
@@ -319,6 +327,42 @@ export class DefaultEventProcessor implements EventProcessor {
       payload: {
         requestId,
       },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.failed
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Marks the source component as failed so it will reject requests submitted
+   * from then on.
+   */
+  private handleComponentFailed(event: SimulationEvent): void {
+    if (!event.sourceNodeId) {
+      throw new Error("component.failed event requires a sourceNodeId.");
+    }
+
+    this.runtime.updateComponent(event.sourceNodeId, {
+      health: "failed",
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.recovered
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Marks the source component as healthy again, restoring its ability to
+   * process requests.
+   */
+  private handleComponentRecovered(event: SimulationEvent): void {
+    if (!event.sourceNodeId) {
+      throw new Error("component.recovered event requires a sourceNodeId.");
+    }
+
+    this.runtime.updateComponent(event.sourceNodeId, {
+      health: "healthy",
     });
   }
 
