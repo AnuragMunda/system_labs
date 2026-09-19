@@ -427,16 +427,37 @@ export class DefaultEventProcessor implements EventProcessor {
       return;
     }
 
+    const availableEdges = edges.filter((edge) =>
+      this.runtime.isNodeAvailable(edge.target),
+    );
+
+    // Every destination is currently unavailable.
+    if (availableEdges.length === 0) {
+      this.runtime.schedule({
+        id: crypto.randomUUID(),
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "request.failed",
+        sourceNodeId,
+        payload: {
+          requestId,
+          reason: "no_available_destination",
+        },
+      });
+
+      return;
+    }
+
     let selectedEdge: ArchitectureEdge;
 
     // Fast path: one outgoing edge means the choice is trivial — skip the
     // strategy lookup entirely.
-    if (edges.length === 1) {
-      selectedEdge = edges[0]!;
+    if (availableEdges.length === 1) {
+      selectedEdge = availableEdges[0]!;
     } else {
       const routingStrategy = this.runtime.getRoutingStrategy(sourceNodeId);
       selectedEdge = routingStrategy.selectEdge(
-        edges,
+        availableEdges,
         this.runtime.getRoutingContext(sourceNodeId, requestId),
       );
     }

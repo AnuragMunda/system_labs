@@ -155,43 +155,6 @@ export class SimulationRuntime {
   }
 
   /**
-   * Returns the number of active (in-flight) requests for a node, or `0` if
-   * the node has no runtime state.
-   */
-  getActiveRequestCount(nodeId: string): number {
-    return this.components.get(nodeId)?.activeRequests ?? 0;
-  }
-
-  /**
-   * Calculates the effective concurrency for a node based on its configuration.
-   * This is the maximum number of requests that can be processed concurrently
-   * by the node.
-   */
-  getEffectiveConcurrency(nodeId: string): number {
-    const node = this.topology.getNode(nodeId);
-
-    if (!node) {
-      throw new Error(`Node not found: ${nodeId}.`);
-    }
-
-    const replicas = node.config.replicas ?? 1;
-    const concurrency = node.config.concurrency ?? 1;
-
-    return getEffectiveConcurrency(replicas, concurrency);
-  }
-
-  /**
-   * Determines if a node has capacity to process more requests based on its
-   * effective concurrency and the number of active requests.
-   */
-  hasCapacity(nodeId: string): boolean {
-    const activeRequests = this.getActiveRequestCount(nodeId);
-    const effectiveConcurrency = this.getEffectiveConcurrency(nodeId);
-
-    return activeRequests < effectiveConcurrency;
-  }
-
-  /**
    * Records that a component started processing a request (success or failure).
    */
   recordProcessingAttempt(nodeId: string): void {
@@ -368,5 +331,52 @@ export class SimulationRuntime {
 
     this.initializeComponents();
     this.initializeRoutingStrategies();
+  }
+
+  // ---------------------------------------------------------------------------
+  // HELPERS
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the number of active (in-flight) requests for a node, or `0` if
+   * the node has no runtime state.
+   */
+  getActiveRequestCount(nodeId: string): number {
+    return this.components.get(nodeId)?.activeRequests ?? 0;
+  }
+
+  /**
+   * Calculates the effective concurrency for a node based on its configuration.
+   * This is the maximum number of requests that can be processed concurrently
+   * by the node.
+   */
+  getEffectiveConcurrency(nodeId: string): number {
+    const node = this.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}.`);
+    }
+
+    const replicas = node.config.replicas ?? 1;
+    const concurrency = node.config.concurrency ?? 1;
+
+    return getEffectiveConcurrency(replicas, concurrency);
+  }
+
+  /**
+   * Determines if a node has capacity to process more requests based on its
+   * effective concurrency and the number of active requests.
+   */
+  hasCapacity(nodeId: string): boolean {
+    const activeRequests = this.getActiveRequestCount(nodeId);
+    const effectiveConcurrency = this.getEffectiveConcurrency(nodeId);
+
+    return activeRequests < effectiveConcurrency;
+  }
+
+  isNodeAvailable(nodeId: string): boolean {
+    const component = this.getComponent(nodeId);
+
+    return component.health !== "failed";
   }
 }

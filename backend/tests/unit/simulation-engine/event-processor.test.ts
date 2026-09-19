@@ -1340,6 +1340,307 @@ describe("DefaultEventProcessor", () => {
       payload: { requestId: "req-1" },
     });
   });
+
+  describe("health-aware routing", () => {
+    function makeRequest(
+      runtime: ReturnType<typeof createRuntime>["runtime"],
+      processor: ReturnType<typeof createRuntime>["processor"],
+      requestId: string,
+      sourceNodeId: string,
+    ): void {
+      runtime.createRequest({
+        id: requestId,
+        status: "pending",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: sourceNodeId,
+      });
+
+      processor.process(
+        createEvent("request.created", 0, requestId, sourceNodeId),
+      );
+    }
+
+    it("should route to a healthy destination", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("lb", "load_balancer"), node("api", "api")],
+        edges: [{ id: "edge-1", source: "lb", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      const routed = runtime.eventQueue.dequeue();
+
+      expect(routed).toMatchObject({
+        type: "request.routed",
+        sourceNodeId: "lb",
+        targetNodeId: "api",
+        timestampMs: 10,
+      });
+    });
+
+    it("should route to a degraded destination", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("lb", "load_balancer"), node("api", "api")],
+        edges: [{ id: "edge-1", source: "lb", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api", { health: "degraded" });
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      const routed = runtime.eventQueue.dequeue();
+
+      expect(routed).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api",
+      });
+    });
+
+    it("should route to a critical destination", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("lb", "load_balancer"), node("api", "api")],
+        edges: [{ id: "edge-1", source: "lb", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api", { health: "critical" });
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      const routed = runtime.eventQueue.dequeue();
+
+      expect(routed).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api",
+      });
+    });
+
+    it("should exclude a failed destination and route only to available ones", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("lb", "load_balancer", { routingStrategy: "round_robin" }),
+          node("api-1", "api"),
+          node("api-2", "api"),
+        ],
+        edges: [
+          { id: "edge-1", source: "lb", target: "api-1", config: {} },
+          { id: "edge-2", source: "lb", target: "api-2", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api-1", { health: "failed" });
+
+      makeRequest(runtime, processor, "req-1", "lb");
+      makeRequest(runtime, processor, "req-2", "lb");
+
+      const first = runtime.eventQueue.dequeue();
+      const second = runtime.eventQueue.dequeue();
+
+      // The failed api-1 is never considered: round robin over a single
+      // available candidate keeps sending to api-2.
+      expect(first).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-2",
+      });
+      expect(second).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-2",
+      });
+    });
+
+    it("should fail the request when every destination is failed", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("lb", "load_balancer", { routingStrategy: "round_robin" }),
+          node("api-1", "api"),
+          node("api-2", "api"),
+        ],
+        edges: [
+          { id: "edge-1", source: "lb", target: "api-1", config: {} },
+          { id: "edge-2", source: "lb", target: "api-2", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api-1", { health: "failed" });
+      runtime.updateComponent("api-2", { health: "failed" });
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      const failed = runtime.eventQueue.dequeue();
+
+      expect(failed).toMatchObject({
+        type: "request.failed",
+        sourceNodeId: "lb",
+        timestampMs: 0,
+        payload: {
+          requestId: "req-1",
+          reason: "no_available_destination",
+        },
+      });
+    });
+
+    it("should route to a destination again after it recovers", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("lb", "load_balancer"), node("api", "api")],
+        edges: [{ id: "edge-1", source: "lb", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api", { health: "failed" });
+
+      // While failed, the single destination is unavailable.
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
+        type: "request.failed",
+        payload: { reason: "no_available_destination" },
+      });
+
+      processor.process(createEvent("component.recovered", 0, "req-1", "api"));
+
+      // After recovery the destination is routable again.
+      makeRequest(runtime, processor, "req-2", "lb");
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api",
+      });
+    });
+
+    it("should still complete requests at a terminal node with no outgoing edges", () => {
+      // A failed terminal node is not availability-filtered: with zero
+      // outgoing edges the request completes rather than failing.
+      const graph: ArchitectureGraph = {
+        nodes: [node("client", "client"), node("database", "database")],
+        edges: [
+          { id: "edge-1", source: "client", target: "database", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("database", { health: "failed" });
+
+      makeRequest(runtime, processor, "req-1", "database");
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
+        type: "request.completed",
+        sourceNodeId: "database",
+        timestampMs: 0,
+      });
+    });
+
+    it("should run round robin across the filtered candidates", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("lb", "load_balancer", { routingStrategy: "round_robin" }),
+          node("api-1", "api"),
+          node("api-2", "api"),
+          node("api-3", "api"),
+        ],
+        edges: [
+          { id: "edge-1", source: "lb", target: "api-1", config: {} },
+          { id: "edge-2", source: "lb", target: "api-2", config: {} },
+          { id: "edge-3", source: "lb", target: "api-3", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api-2", { health: "failed" });
+
+      makeRequest(runtime, processor, "req-1", "lb");
+      makeRequest(runtime, processor, "req-2", "lb");
+
+      const first = runtime.eventQueue.dequeue();
+      const second = runtime.eventQueue.dequeue();
+
+      // Cycle over [api-1, api-3] only: the failed api-2 is skipped.
+      expect(first).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-1",
+      });
+      expect(second).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-3",
+      });
+    });
+
+    it("should run random across the filtered candidates", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("lb", "load_balancer", { routingStrategy: "random" }),
+          node("api-1", "api"),
+          node("api-2", "api"),
+          node("api-3", "api"),
+        ],
+        edges: [
+          { id: "edge-1", source: "lb", target: "api-1", config: {} },
+          { id: "edge-2", source: "lb", target: "api-2", config: {} },
+          { id: "edge-3", source: "lb", target: "api-3", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api-2", { health: "failed" });
+
+      // floor(0.9 * 2) = 1 → the second of [api-1, api-3] → api-3.
+      vi.spyOn(runtime.random, "next").mockReturnValue(0.9);
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-3",
+      });
+    });
+
+    it("should run least connections across the filtered candidates", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("lb", "load_balancer", {
+            routingStrategy: "least_connections",
+          }),
+          node("api-1", "api"),
+          node("api-2", "api"),
+          node("api-3", "api"),
+        ],
+        edges: [
+          { id: "edge-1", source: "lb", target: "api-1", config: {} },
+          { id: "edge-2", source: "lb", target: "api-2", config: {} },
+          { id: "edge-3", source: "lb", target: "api-3", config: {} },
+        ],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.updateComponent("api-2", { health: "failed" });
+
+      // Among the available [api-1, api-3], api-3 is the least busy.
+      runtime.incrementActiveRequests("api-1");
+      runtime.incrementActiveRequests("api-1");
+      runtime.incrementActiveRequests("api-3");
+
+      makeRequest(runtime, processor, "req-1", "lb");
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
+        type: "request.routed",
+        targetNodeId: "api-3",
+      });
+    });
+  });
 });
 
 describe("error rate failure lifecycle", () => {
