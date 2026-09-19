@@ -403,6 +403,209 @@ describe("SimulationRuntime", () => {
       "Routing strategy not configured for node: lb",
     );
   });
+
+  describe("health evaluation bookkeeping", () => {
+    it("should initialize processing counters and effective concurrency", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          {
+            id: "api",
+            type: "api",
+            name: "api",
+            position: { x: 0, y: 0 },
+            config: { replicas: 2, concurrency: 2 },
+          },
+        ],
+        edges: [],
+      };
+
+      const runtime = new SimulationRuntime(
+        createSimulation({ architectureSnapshot: graph }),
+      );
+
+      const component = runtime.getComponent("api");
+
+      expect(component.totalProcessingAttempts).toBe(0);
+      expect(component.failedProcessingAttempts).toBe(0);
+      expect(component.totalProcessingLatencyMs).toBe(0);
+      expect(component.lastProcessingLatencyMs).toBeUndefined();
+      expect(component.effectiveConcurrency).toBe(4);
+    });
+
+    it("should record processing attempts and failures", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      runtime.recordProcessingAttempt("api");
+      runtime.recordProcessingAttempt("api");
+      runtime.recordProcessingFailure("api");
+
+      expect(runtime.getComponent("api").totalProcessingAttempts).toBe(2);
+      expect(runtime.getComponent("api").failedProcessingAttempts).toBe(1);
+    });
+
+    it("should record processing latency cumulatively and as the latest value", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      runtime.recordProcessingLatency("api", 25);
+      runtime.recordProcessingLatency("api", 35);
+      runtime.recordProcessingLatency("api", 40);
+
+      expect(runtime.getComponent("api").totalProcessingLatencyMs).toBe(100);
+      expect(runtime.getComponent("api").lastProcessingLatencyMs).toBe(40);
+    });
+
+    it("should throw when processing latency is negative", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      expect(() => runtime.recordProcessingLatency("api", -1)).toThrow(
+        "Processing latency cannot be negative: -1",
+      );
+    });
+  });
+
+  describe("evaluateComponentHealth", () => {
+    it("should leave an explicitly failed component failed", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      runtime.updateComponent("api", {
+        health: "failed",
+        totalProcessingAttempts: 100,
+        failedProcessingAttempts: 100,
+      });
+
+      runtime.evaluateComponentHealth("api");
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+    });
+
+    it("should use node-specific health thresholds when configured", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          {
+            id: "api",
+            type: "api",
+            name: "api",
+            position: { x: 0, y: 0 },
+            config: {
+              healthThresholds: {
+                utilization: { degraded: 0.2, critical: 0.5 },
+                errorRate: { degraded: 0.05, critical: 0.2 },
+                latencyMs: { degraded: 200, critical: 500 },
+              },
+            },
+          },
+        ],
+        edges: [],
+      };
+
+      const runtime = new SimulationRuntime(
+        createSimulation({ architectureSnapshot: graph }),
+      );
+
+      // 1 active request on effectiveConcurrency 1 → utilization 1.0 ≥ 0.5.
+      runtime.incrementActiveRequests("api");
+      runtime.evaluateComponentHealth("api");
+
+      expect(runtime.getComponent("api").health).toBe("critical");
+    });
+
+    it("should fall back to default thresholds and report degraded health", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      // High utilization without custom thresholds → degraded, not critical.
+      runtime.updateComponent("api", {
+        activeRequests: 8,
+        effectiveConcurrency: 10,
+      });
+
+      runtime.evaluateComponentHealth("api");
+
+      expect(runtime.getComponent("api").health).toBe("degraded");
+    });
+
+    it("should throw when the node does not exist", () => {
+      const runtime = new SimulationRuntime(createSimulation());
+
+      expect(() => runtime.evaluateComponentHealth("missing")).toThrow(
+        "Component not found: missing",
+      );
+    });
+  });
 });
 
 describe("SimulationEngine", () => {

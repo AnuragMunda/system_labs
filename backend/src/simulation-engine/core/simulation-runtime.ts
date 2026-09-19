@@ -20,6 +20,8 @@ import { getEffectiveConcurrency } from "../helper.js";
 import { ComponentRequestQueue } from "../capacity/component-request-queue.js";
 import { createRoutingStrategy } from "../routing/routing-strategy.factory.js";
 import type { RoutingContext } from "../routing/routing-context.js";
+import { ComponentHealthEvaluator } from "../components/health/component-health-evaluator.js";
+import { DEFAULT_HEALTH_THRESHOLDS } from "../components/health/default-thresholds.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -34,6 +36,8 @@ export class SimulationRuntime {
   readonly componentRequestQueue: ComponentRequestQueue =
     new ComponentRequestQueue();
   readonly random: SimulationRandom;
+  /** Evaluates component health from runtime counters and configured thresholds. */
+  readonly healthEvaluator = new ComponentHealthEvaluator();
 
   private readonly requests = new Map<string, SimulationRequest>();
   private readonly components = new Map<string, ComponentRuntimeState>();
@@ -187,6 +191,79 @@ export class SimulationRuntime {
     return activeRequests < effectiveConcurrency;
   }
 
+  /**
+   * Records that a component started processing a request (success or failure).
+   */
+  recordProcessingAttempt(nodeId: string): void {
+    const component = this.getComponent(nodeId);
+
+    this.updateComponent(nodeId, {
+      totalProcessingAttempts: component.totalProcessingAttempts + 1,
+    });
+  }
+
+  /**
+   * Records that a processing attempt failed (errorRate-driven).
+   */
+  recordProcessingFailure(nodeId: string): void {
+    const component = this.getComponent(nodeId);
+
+    this.updateComponent(nodeId, {
+      failedProcessingAttempts: component.failedProcessingAttempts + 1,
+    });
+  }
+
+  /**
+   * Records the processing latency of a completed request, both cumulatively
+   * and as the most recent value.
+   *
+   * @throws If the latency is negative.
+   */
+  recordProcessingLatency(nodeId: string, latencyMs: number): void {
+    if (latencyMs < 0) {
+      throw new Error(`Processing latency cannot be negative: ${latencyMs}`);
+    }
+
+    const component = this.getComponent(nodeId);
+
+    this.updateComponent(nodeId, {
+      totalProcessingLatencyMs: component.totalProcessingLatencyMs + latencyMs,
+
+      lastProcessingLatencyMs: latencyMs,
+    });
+  }
+
+  /**
+   * Recomputes a component's health from its runtime counters using the health
+   * thresholds declared on its node config (or the defaults). Components that
+   * were explicitly failed stay failed until a component.recovered event; a
+   * non-failed component can return to healthy when its metrics improve.
+   */
+  evaluateComponentHealth(nodeId: string): void {
+    const component = this.getComponent(nodeId);
+
+    // Explicitly failed components remain failed until
+    // an explicit recovery event occurs.
+    if (component.health === "failed") {
+      return;
+    }
+
+    const node = this.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const thresholds =
+      node.config.healthThresholds ?? DEFAULT_HEALTH_THRESHOLDS;
+
+    const health = this.healthEvaluator.evaluate(component, thresholds);
+
+    this.updateComponent(nodeId, {
+      health,
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // ROUTING
   // ---------------------------------------------------------------------------
@@ -253,6 +330,10 @@ export class SimulationRuntime {
         health: node.config.health ?? "healthy",
         activeRequests: 0,
         processedRequests: 0,
+        totalProcessingAttempts: 0,
+        failedProcessingAttempts: 0,
+        totalProcessingLatencyMs: 0,
+        effectiveConcurrency: this.getEffectiveConcurrency(node.id),
       });
     }
   }

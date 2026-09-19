@@ -4,6 +4,8 @@
  * @description This file defines the types and interfaces related to architecture components in the system.
  */
 
+import { ComponentHealthThresholds } from "../simulation/health.type.js";
+
 /**
  * A node in an architecture graph. Each node represents one deployable
  * component (e.g. an API gateway, cache, database) and its configuration.
@@ -80,6 +82,8 @@ interface ComponentConfig {
   health?: RuntimeComponentHealth;
   /** Which load-balancing algorithm to use when this node forwards requests downstream. Defaults to round-robin if omitted. */
   routingStrategy?: RoutingStrategyType;
+  /** Health thresholds used for automatic health evaluation. Falls back to DEFAULT_HEALTH_THRESHOLDS when omitted. */
+  healthThresholds?: ComponentHealthThresholds;
 }
 
 export type RuntimeComponentHealth =

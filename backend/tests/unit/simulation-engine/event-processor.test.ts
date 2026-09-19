@@ -250,9 +250,15 @@ describe("DefaultEventProcessor", () => {
       currentNodeId: "api",
     });
 
-    processor.process(
-      createEvent("request.processing_completed", 30, "req-1", "api"),
+    const completed = createEvent(
+      "request.processing_completed",
+      30,
+      "req-1",
+      "api",
     );
+    completed.payload = { requestId: "req-1", processingStartedAtMs: 10 };
+
+    processor.process(completed);
 
     const scheduled = runtime.eventQueue.dequeue();
 
@@ -555,6 +561,171 @@ describe("DefaultEventProcessor", () => {
     });
   });
 
+  describe("health evaluation", () => {
+    it("should record processing attempts and latency for a successful request", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", { latencyMs: 50, concurrency: 10 }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const completed = runtime.eventQueue.dequeue();
+
+      expect(completed?.payload?.processingStartedAtMs).toBe(10);
+
+      processor.process(completed!);
+
+      const component = runtime.getComponent("api");
+
+      expect(component.totalProcessingAttempts).toBe(1);
+      expect(component.failedProcessingAttempts).toBe(0);
+      expect(component.totalProcessingLatencyMs).toBe(50);
+      expect(component.lastProcessingLatencyMs).toBe(50);
+      expect(component.processedRequests).toBe(1);
+    });
+
+    it("should record a failed processing attempt when the component errors", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("client", "client"), node("api", "api", { errorRate: 1 })],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const scheduled = runtime.eventQueue.dequeue();
+
+      expect(scheduled?.type).toBe("request.failed");
+
+      const component = runtime.getComponent("api");
+
+      expect(component.totalProcessingAttempts).toBe(1);
+      expect(component.failedProcessingAttempts).toBe(1);
+    });
+
+    it("should mark a component critical on high utilization and healthy after completion", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("client", "client"), node("api", "api")],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // Default effective concurrency is 1, so the single active request
+      // pushes utilization to 1.0 → critical (≥ 0.9).
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      expect(runtime.getComponent("api").health).toBe("critical");
+
+      // Completing the request frees the slot → utilization 0 → healthy again.
+      const completed = runtime.eventQueue.dequeue();
+      processor.process(completed!);
+
+      expect(runtime.getComponent("api").health).toBe("healthy");
+    });
+
+    it("should mark a component degraded when its average latency crosses a configured threshold", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            latencyMs: 250,
+            concurrency: 10,
+            healthThresholds: {
+              utilization: { degraded: 0.7, critical: 0.9 },
+              errorRate: { degraded: 0.05, critical: 0.2 },
+              latencyMs: { degraded: 200, critical: 500 },
+            },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // Low utilization keeps the component healthy before any request completes.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      expect(runtime.getComponent("api").health).toBe("healthy");
+
+      // Average latency is now 250ms ≥ degraded (200) → degraded.
+      const completed = runtime.eventQueue.dequeue();
+      processor.process(completed!);
+
+      expect(runtime.getComponent("api").health).toBe("degraded");
+    });
+
+    it("should throw when processing_completed lacks processingStartedAtMs", () => {
+      const { runtime, processor } = createRuntime();
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      const event = createEvent(
+        "request.processing_completed",
+        30,
+        "req-1",
+        "api",
+      );
+
+      expect(() => processor.process(event)).toThrow(
+        "request.processing_completed event requires processingStartedAtMs.",
+      );
+    });
+  });
+
   it("should fail a request when the component has failed", () => {
     const { runtime, processor } = createRuntime();
 
@@ -731,9 +902,15 @@ describe("DefaultEventProcessor", () => {
       currentNodeId: "database",
     });
 
-    processor.process(
-      createEvent("request.processing_completed", 30, "req-1", "database"),
+    const completed = createEvent(
+      "request.processing_completed",
+      30,
+      "req-1",
+      "database",
     );
+    completed.payload = { requestId: "req-1", processingStartedAtMs: 10 };
+
+    processor.process(completed);
 
     const scheduled = runtime.eventQueue.dequeue();
 

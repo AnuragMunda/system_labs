@@ -169,6 +169,9 @@ export class DefaultEventProcessor implements EventProcessor {
       attempts: currentAttempt,
     });
 
+    // Feed the health evaluator with the attempt; failures are counted too.
+    this.runtime.recordProcessingAttempt(event.sourceNodeId);
+
     // 5. Evaluate error rate
     const errorRate = node.config.errorRate ?? 0;
 
@@ -176,6 +179,8 @@ export class DefaultEventProcessor implements EventProcessor {
 
     // 6. If error → retry/fail
     if (failed) {
+      this.runtime.recordProcessingFailure(event.sourceNodeId);
+
       const retryPolicy = node.config.retryPolicy;
       const maxRetries = retryPolicy?.retries;
 
@@ -216,9 +221,14 @@ export class DefaultEventProcessor implements EventProcessor {
     // 7. Otherwise increment activeRequests
     this.runtime.incrementActiveRequests(event.sourceNodeId);
 
+    // A started request may push utilization (or observed error/latency) over a
+    // threshold, so reflect it in the component's health immediately.
+    this.runtime.evaluateComponentHealth(event.sourceNodeId);
+
     const latencyMs = node.config.latencyMs ?? 0;
 
-    // 8. Schedule processing_completed
+    // 8. Schedule processing_completed; the start timestamp lets the completion
+    // handler compute the request's actual processing latency.
     this.runtime.schedule({
       id: crypto.randomUUID(),
       simulationId: event.simulationId,
@@ -227,6 +237,7 @@ export class DefaultEventProcessor implements EventProcessor {
       sourceNodeId: event.sourceNodeId,
       payload: {
         requestId,
+        processingStartedAtMs: event.timestampMs,
       },
     });
   }
@@ -245,6 +256,15 @@ export class DefaultEventProcessor implements EventProcessor {
     // Validates that the event carries a requestId.
     this.getRequestId(event);
 
+    // The start timestamp is required to derive the real processing latency.
+    const processingStartedAtMs = event.payload?.processingStartedAtMs;
+
+    if (typeof processingStartedAtMs !== "number") {
+      throw new Error(
+        "request.processing_completed event requires processingStartedAtMs.",
+      );
+    }
+
     const sourceNodeId = event.sourceNodeId;
 
     if (!sourceNodeId) {
@@ -253,8 +273,15 @@ export class DefaultEventProcessor implements EventProcessor {
       );
     }
 
+    // Record actual latency, then free capacity and refresh health now that
+    // utilization (and the latency/error history) has changed.
+    const processingLatencyMs = event.timestampMs - processingStartedAtMs;
+    this.runtime.recordProcessingLatency(sourceNodeId, processingLatencyMs);
+
     this.runtime.decrementActiveRequests(sourceNodeId);
     this.runtime.recordProcessedRequest(sourceNodeId);
+
+    this.runtime.evaluateComponentHealth(sourceNodeId);
 
     const queuedRequestId = this.runtime.dequeueRequest(sourceNodeId);
 
