@@ -538,6 +538,94 @@ describe("SimulationRuntime", () => {
       expect(runtime.getComponent("api").health).toBe("failed");
     });
 
+    it("should return no transition for an already failed component", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      runtime.updateComponent("api", {
+        health: "failed",
+        activeRequests: 8,
+        effectiveConcurrency: 10,
+        failedProcessingAttempts: 100,
+        totalProcessingAttempts: 100,
+      });
+
+      const transition = runtime.evaluateComponentHealth("api");
+
+      // Automatic health evaluation never mutates an explicitly failed
+      // component, so no transition is reported.
+      expect(transition).toBeUndefined();
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+    });
+
+    it("should return a transition when health actually changes", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      // Default effective concurrency is 1, so a single active request gives
+      // utilization 1.0 → critical (≥ 0.9).
+      runtime.incrementActiveRequests("api");
+
+      const transition = runtime.evaluateComponentHealth("api");
+
+      expect(transition).toEqual({
+        previousHealth: "healthy",
+        health: "critical",
+      });
+
+      expect(runtime.getComponent("api").health).toBe("critical");
+    });
+
+    it("should return no transition when health is unchanged", () => {
+      const runtime = new SimulationRuntime(
+        createSimulation({
+          architectureSnapshot: {
+            nodes: [
+              {
+                id: "api",
+                type: "api",
+                name: "api",
+                position: { x: 0, y: 0 },
+                config: {},
+              },
+            ],
+            edges: [],
+          },
+        }),
+      );
+
+      expect(runtime.evaluateComponentHealth("api")).toBeUndefined();
+    });
+
     it("should use node-specific health thresholds when configured", () => {
       const graph: ArchitectureGraph = {
         nodes: [
@@ -604,6 +692,58 @@ describe("SimulationRuntime", () => {
       expect(() => runtime.evaluateComponentHealth("missing")).toThrow(
         "Component not found: missing",
       );
+    });
+  });
+
+  describe("recovery cycles", () => {
+    const apiGraph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [],
+    };
+
+    function createApiRuntime(): SimulationRuntime {
+      return new SimulationRuntime(
+        createSimulation({ architectureSnapshot: apiGraph }),
+      );
+    }
+
+    it("should start recovery generation at 0", () => {
+      const runtime = createApiRuntime();
+
+      expect(runtime.getComponent("api").recoveryGeneration).toBe(0);
+      expect(runtime.getRecoveryGeneration("api")).toBe(0);
+    });
+
+    it("should increment the recovery generation on each new recovery cycle", () => {
+      const runtime = createApiRuntime();
+
+      expect(runtime.startRecoveryCycle("api")).toBe(1);
+      expect(runtime.startRecoveryCycle("api")).toBe(2);
+
+      expect(runtime.getRecoveryGeneration("api")).toBe(2);
+    });
+
+    it("should restore health and recovery generation on reset", () => {
+      const runtime = createApiRuntime();
+
+      runtime.setComponentHealth("api", "failed");
+      runtime.startRecoveryCycle("api");
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+      expect(runtime.getRecoveryGeneration("api")).toBe(1);
+
+      runtime.reset();
+
+      expect(runtime.getComponent("api").health).toBe("healthy");
+      expect(runtime.getRecoveryGeneration("api")).toBe(0);
     });
   });
 });
@@ -1538,7 +1678,9 @@ describe("SimulationEngine", () => {
       });
       simulation.config = {
         ...simulation.config,
-        failures: [{ nodeId: "api", failedAtMs: 50, recoverAtMs: 80 }],
+        // Recovery is config-driven (recoveryDelayMs); failures only schedule
+        // the initial component.failed event.
+        failures: [{ nodeId: "api", failedAtMs: 50 }],
       };
 
       const runtime = new SimulationRuntime(simulation);
@@ -1553,19 +1695,13 @@ describe("SimulationEngine", () => {
 
       expect(runtime.simulation.status).toBe("created");
       expect(runtime.clock.now()).toBe(0);
-      expect(runtime.eventQueue.size()).toBe(2);
+      expect(runtime.eventQueue.size()).toBe(1);
 
       const failed = runtime.eventQueue.dequeue();
-      const recovered = runtime.eventQueue.dequeue();
 
       expect(failed).toMatchObject({
         type: "component.failed",
         timestampMs: 50,
-        sourceNodeId: "api",
-      });
-      expect(recovered).toMatchObject({
-        type: "component.recovered",
-        timestampMs: 80,
         sourceNodeId: "api",
       });
     });

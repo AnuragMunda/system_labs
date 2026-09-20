@@ -13,13 +13,14 @@ export type SimulationStatus =
   "created" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
 /**
- * A scheduled component outage: the node fails at `failedAtMs` and, when
- * `recoverAtMs` is set, returns to healthy at that later time.
+ * A scheduled component outage: the node fails at `failedAtMs`.
+ *
+ * Automatic recovery is not scheduled from the failure configuration; it is
+ * driven by the failed component's `recoveryDelayMs` node config.
  */
 export interface FailureSchedule {
   nodeId: string;
   failedAtMs: number;
-  recoverAtMs?: number;
 }
 
 /** Configuration controlling how a simulation generates and plays back load. */

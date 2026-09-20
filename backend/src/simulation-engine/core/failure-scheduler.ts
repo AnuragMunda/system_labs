@@ -6,16 +6,19 @@ import { FailureSchedule } from "@/domain/simulation/simulation.types.js";
 import type { SimulationRuntime } from "./simulation-runtime.js";
 
 /**
- * Converts the failure schedule in a simulation's config into `component.failed`
- * and `component.recovered` events queued on the runtime, so components fail and
- * recover while the simulation runs.
+ * Converts the failure schedule in a simulation's config into
+ * `component.failed` events queued on the runtime, so components fail while the
+ * simulation runs. Recovery is handled separately by the event processor based
+ * on the failed component's `recoveryDelayMs` configuration.
  */
 export class FailureScheduler {
   constructor(private readonly runtime: SimulationRuntime) {}
 
   /**
-   * Validates each configured failure and queues its failure (and optional
-   * recovery) event at the configured timestamps.
+   * Validates each configured failure and queues its failure event.
+   *
+   * Recovery is handled automatically by the event processor based on the
+   * failed component's recoveryDelayMs configuration.
    */
   schedule(): void {
     const failures = this.runtime.simulation.config.failures ?? [];
@@ -30,23 +33,11 @@ export class FailureScheduler {
         type: "component.failed",
         sourceNodeId: failure.nodeId,
       });
-
-      if (failure.recoverAtMs !== undefined) {
-        this.runtime.schedule({
-          id: crypto.randomUUID(),
-          simulationId: this.runtime.simulation.id,
-          timestampMs: failure.recoverAtMs,
-          type: "component.recovered",
-          sourceNodeId: failure.nodeId,
-        });
-      }
     }
   }
 
   /**
-   * Ensures a failure entry is well-formed: its nodes exist in the topology and
-   * its failure/recovery times fall strictly within the simulation duration,
-   * with recovery always after failure.
+   * Ensures a failure entry is well-formed.
    */
   private validate(failure: FailureSchedule): void {
     const node = this.runtime.topology.getNode(failure.nodeId);
@@ -64,24 +55,6 @@ export class FailureScheduler {
     if (failure.failedAtMs >= durationMs) {
       throw new Error(
         `Failure time ${failure.failedAtMs} must be less than simulation duration ${durationMs}.`,
-      );
-    }
-
-    if (
-      failure.recoverAtMs !== undefined &&
-      failure.recoverAtMs <= failure.failedAtMs
-    ) {
-      throw new Error(
-        `Recovery time ${failure.recoverAtMs} must be greater than failure time ${failure.failedAtMs}.`,
-      );
-    }
-
-    if (
-      failure.recoverAtMs !== undefined &&
-      failure.recoverAtMs >= durationMs
-    ) {
-      throw new Error(
-        `Recovery time ${failure.recoverAtMs} must be less than simulation duration ${durationMs}.`,
       );
     }
   }

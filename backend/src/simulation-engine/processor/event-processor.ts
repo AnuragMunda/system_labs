@@ -12,6 +12,7 @@ import { EventProcessor } from "../types.js";
 import { getNetworkLatency } from "../network/network-latency.js";
 import { canRetry, DEFAULT_RETRY_DELAY_MS, shouldFail } from "../helper.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
+import { ComponentRuntimeState } from "../components/component-runtime-state.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -50,10 +51,21 @@ export class DefaultEventProcessor implements EventProcessor {
         this.handleComponentFailed(event);
         break;
 
+      case "component.recovery":
+        this.handleComponentRecovery(event);
+        break;
+
       case "component.recovered":
         this.handleComponentRecovered(event);
         break;
 
+      case "component.health_changed":
+        this.handleComponentHealthChanged(event);
+        break;
+
+      // component.recovery_scheduled is observability-only and intentionally
+      // has no handler; it shares the timestamp and payload data of the
+      // component.recovery event it accompanies.
       default:
         break;
     }
@@ -223,7 +235,18 @@ export class DefaultEventProcessor implements EventProcessor {
 
     // A started request may push utilization (or observed error/latency) over a
     // threshold, so reflect it in the component's health immediately.
-    this.runtime.evaluateComponentHealth(event.sourceNodeId);
+    const healthTransition = this.runtime.evaluateComponentHealth(
+      event.sourceNodeId,
+    );
+
+    if (healthTransition) {
+      this.scheduleHealthChanged(
+        event,
+        event.sourceNodeId,
+        healthTransition.previousHealth,
+        healthTransition.health,
+      );
+    }
 
     const latencyMs = node.config.latencyMs ?? 0;
 
@@ -281,7 +304,16 @@ export class DefaultEventProcessor implements EventProcessor {
     this.runtime.decrementActiveRequests(sourceNodeId);
     this.runtime.recordProcessedRequest(sourceNodeId);
 
-    this.runtime.evaluateComponentHealth(sourceNodeId);
+    const healthTransition = this.runtime.evaluateComponentHealth(sourceNodeId);
+
+    if (healthTransition) {
+      this.scheduleHealthChanged(
+        event,
+        sourceNodeId,
+        healthTransition.previousHealth,
+        healthTransition.health,
+      );
+    }
 
     const queuedRequestId = this.runtime.dequeueRequest(sourceNodeId);
 
@@ -363,15 +395,100 @@ export class DefaultEventProcessor implements EventProcessor {
 
   /**
    * Marks the source component as failed so it will reject requests submitted
-   * from then on.
+   * from then on, emits a component.health_changed event for the transition, and
+   * schedules an automatic recovery when the node configures a recoveryDelayMs.
    */
   private handleComponentFailed(event: SimulationEvent): void {
-    if (!event.sourceNodeId) {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
       throw new Error("component.failed event requires a sourceNodeId.");
     }
 
-    this.runtime.updateComponent(event.sourceNodeId, {
-      health: "failed",
+    const component = this.runtime.getComponent(nodeId);
+
+    // The component is already failed. There is nothing new to do.
+    if (component.health === "failed") {
+      return;
+    }
+
+    const previousHealth = component.health;
+
+    this.runtime.setComponentHealth(nodeId, "failed");
+
+    this.scheduleHealthChanged(event, nodeId, previousHealth, "failed");
+
+    this.scheduleRecovery(event, nodeId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.health_changed
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Observes a component health transition.
+   *
+   * The new health state is already applied by the operation that produced this
+   * event; this handler exists only to make the transition observable.
+   */
+  private handleComponentHealthChanged(event: SimulationEvent): void {
+    if (!event.sourceNodeId) {
+      throw new Error(
+        "component.health_changed event requires a sourceNodeId.",
+      );
+    }
+
+    // Health has already been updated by the operation that caused
+    // this event. This event exists to make the transition observable.
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.recovery
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fires an automatic recovery target: schedules a component.recovered event
+   * when the recovery generation still matches and the component is still
+   * failed. Stale recovery events from an earlier failure/recovery cycle are
+   * ignored so an old timer can never recover a component that has since failed
+   * again or already recovered through another mechanism.
+   */
+  private handleComponentRecovery(event: SimulationEvent): void {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
+      throw new Error("component.recovery event requires a sourceNodeId.");
+    }
+
+    const recoveryGeneration = event.payload?.recoveryGeneration;
+
+    if (typeof recoveryGeneration !== "number") {
+      throw new Error(
+        "component.recovery event requires a recoveryGeneration.",
+      );
+    }
+
+    const component = this.runtime.getComponent(nodeId);
+
+    // Ignore stale recovery events.
+    if (component.recoveryGeneration !== recoveryGeneration) {
+      return;
+    }
+
+    // The component may already have recovered through another mechanism.
+    if (component.health !== "failed") {
+      return;
+    }
+
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs,
+      type: "component.recovered",
+      sourceNodeId: nodeId,
+      payload: {
+        recoveryGeneration,
+      },
     });
   }
 
@@ -380,17 +497,30 @@ export class DefaultEventProcessor implements EventProcessor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Marks the source component as healthy again, restoring its ability to
-   * process requests.
+   * Restores a failed component to healthy and emits a component.health_changed
+   * event for the transition.
+   *
+   * Only acts when the component is currently failed; a component.recovered
+   * event for a healthy/degraded/critical component is a no-op.
    */
   private handleComponentRecovered(event: SimulationEvent): void {
-    if (!event.sourceNodeId) {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
       throw new Error("component.recovered event requires a sourceNodeId.");
     }
 
-    this.runtime.updateComponent(event.sourceNodeId, {
-      health: "healthy",
-    });
+    const component = this.runtime.getComponent(nodeId);
+
+    if (component.health !== "failed") {
+      return;
+    }
+
+    const previousHealth = component.health;
+
+    this.runtime.setComponentHealth(nodeId, "healthy");
+
+    this.scheduleHealthChanged(event, nodeId, previousHealth, "healthy");
   }
 
   // ---------------------------------------------------------------------------
@@ -488,5 +618,82 @@ export class DefaultEventProcessor implements EventProcessor {
     }
 
     return requestId;
+  }
+
+  /**
+   * Schedules the component.health_changed event that makes a health transition
+   * observable in the event stream.
+   */
+  private scheduleHealthChanged(
+    event: SimulationEvent,
+    nodeId: string,
+    previousHealth: ComponentRuntimeState["health"],
+    health: ComponentRuntimeState["health"],
+  ): void {
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: event.timestampMs,
+      type: "component.health_changed",
+      sourceNodeId: nodeId,
+      payload: {
+        previousHealth,
+        health,
+      },
+    });
+  }
+
+  /**
+   * Schedules automatic recovery for a failed component that declares a
+   * recoveryDelayMs in its config.
+   *
+   * Each failure starts a new recovery cycle, so previously scheduled recovery
+   * events become stale and are discarded when they eventually fire. The
+   * component.recovery_scheduled event is observability-only and has no handler.
+   */
+  private scheduleRecovery(event: SimulationEvent, nodeId: string): void {
+    const node = this.runtime.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const recoveryDelayMs = node.config.recoveryDelayMs;
+
+    // Undefined means automatic recovery is disabled.
+    if (recoveryDelayMs === undefined) {
+      return;
+    }
+
+    if (recoveryDelayMs < 0) {
+      throw new Error(`Recovery delay cannot be negative: ${recoveryDelayMs}`);
+    }
+
+    const recoveryGeneration = this.runtime.startRecoveryCycle(nodeId);
+
+    const recoveryTimestampMs = event.timestampMs + recoveryDelayMs;
+
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: recoveryTimestampMs,
+      type: "component.recovery_scheduled",
+      sourceNodeId: nodeId,
+      payload: {
+        recoveryGeneration,
+        recoveryAtMs: recoveryTimestampMs,
+      },
+    });
+
+    this.runtime.schedule({
+      id: crypto.randomUUID(),
+      simulationId: event.simulationId,
+      timestampMs: recoveryTimestampMs,
+      type: "component.recovery",
+      sourceNodeId: nodeId,
+      payload: {
+        recoveryGeneration,
+      },
+    });
   }
 }

@@ -14,4 +14,6 @@ export interface ComponentRuntimeState {
   lastProcessingLatencyMs?: number; // Latency of the most recently completed request.
 
   effectiveConcurrency: number; // Max requests processable concurrently (replicas * concurrency).
+
+  recoveryGeneration: number; // Identifies the current failure/recovery cycle.
 }

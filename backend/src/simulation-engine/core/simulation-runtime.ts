@@ -201,14 +201,23 @@ export class SimulationRuntime {
    * thresholds declared on its node config (or the defaults). Components that
    * were explicitly failed stay failed until a component.recovered event; a
    * non-failed component can return to healthy when its metrics improve.
+   *
+   * Returns `{ previousHealth, health }` when the health state actually
+   * changed, or `undefined` when it did not (including explicitly failed
+   * components, which are never mutated by automatic evaluation).
    */
-  evaluateComponentHealth(nodeId: string): void {
+  evaluateComponentHealth(nodeId: string):
+    | {
+        previousHealth: ComponentRuntimeState["health"];
+        health: ComponentRuntimeState["health"];
+      }
+    | undefined {
     const component = this.getComponent(nodeId);
 
     // Explicitly failed components remain failed until
     // an explicit recovery event occurs.
     if (component.health === "failed") {
-      return;
+      return undefined;
     }
 
     const node = this.topology.getNode(nodeId);
@@ -222,9 +231,62 @@ export class SimulationRuntime {
 
     const health = this.healthEvaluator.evaluate(component, thresholds);
 
+    if (health === component.health) {
+      return undefined;
+    }
+
+    const previousHealth = component.health;
+
     this.updateComponent(nodeId, {
       health,
     });
+
+    return {
+      previousHealth,
+      health,
+    };
+  }
+
+  /**
+   * Changes a component's health state.
+   *
+   * This method only updates runtime state. Event creation remains the
+   * responsibility of the event processor.
+   */
+  setComponentHealth(
+    nodeId: string,
+    health: ComponentRuntimeState["health"],
+  ): void {
+    this.getComponent(nodeId);
+
+    this.updateComponent(nodeId, {
+      health,
+    });
+  }
+
+  /**
+   * Starts a new recovery cycle for a component and returns its generation.
+   *
+   * Incrementing the generation invalidates any previously scheduled recovery
+   * event for this component.
+   */
+  startRecoveryCycle(nodeId: string): number {
+    const component = this.getComponent(nodeId);
+
+    const recoveryGeneration = component.recoveryGeneration + 1;
+
+    this.updateComponent(nodeId, {
+      recoveryGeneration,
+    });
+
+    return recoveryGeneration;
+  }
+
+  /**
+   * Returns the current recovery generation for a component.
+   */
+  getRecoveryGeneration(nodeId: string): number {
+    return this.getComponent(nodeId).recoveryGeneration;
   }
 
   // ---------------------------------------------------------------------------
@@ -297,6 +359,7 @@ export class SimulationRuntime {
         failedProcessingAttempts: 0,
         totalProcessingLatencyMs: 0,
         effectiveConcurrency: this.getEffectiveConcurrency(node.id),
+        recoveryGeneration: 0,
       });
     }
   }

@@ -117,6 +117,26 @@ function createRuntime(
   return { runtime, processor };
 }
 
+/**
+ * Skips observability events (such as component.health_changed) that can
+ * precede a request event at the same timestamp and returns the next event
+ * of the requested type, or undefined when none is queued.
+ */
+function dequeueEventOfType(
+  runtime: SimulationRuntime,
+  type: SimulationEvent["type"],
+): SimulationEvent | undefined {
+  while (!runtime.eventQueue.isEmpty()) {
+    const event = runtime.eventQueue.dequeue();
+
+    if (event.type === type) {
+      return event;
+    }
+  }
+
+  return undefined;
+}
+
 describe("DefaultEventProcessor", () => {
   it("should validate the pre-existing request and schedule its first route on request.created", () => {
     const { runtime, processor } = createRuntime();
@@ -315,7 +335,10 @@ describe("DefaultEventProcessor", () => {
       createEvent("request.processing_started", 10, "req-1", "api"),
     );
 
-    const scheduled = runtime.eventQueue.dequeue();
+    const scheduled = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(scheduled?.type).toBe("request.processing_completed");
     expect(scheduled?.timestampMs).toBe(60);
@@ -436,7 +459,10 @@ describe("DefaultEventProcessor", () => {
         createEvent("request.processing_started", 10, "req-1", "api"),
       );
 
-      const completed = runtime.eventQueue.dequeue();
+      const completed = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      );
 
       // Second request is queued while the slot is held.
       processor.process(
@@ -452,7 +478,10 @@ describe("DefaultEventProcessor", () => {
       expect(runtime.getComponent("api").activeRequests).toBe(0);
 
       // The queued request was scheduled for processing.
-      const nextProcessing = runtime.eventQueue.dequeue();
+      const nextProcessing = dequeueEventOfType(
+        runtime,
+        "request.processing_started",
+      );
 
       expect(nextProcessing?.type).toBe("request.processing_started");
       expect(nextProcessing?.payload?.requestId).toBe("req-3");
@@ -519,7 +548,7 @@ describe("DefaultEventProcessor", () => {
         createEvent("request.processing_started", 10, "req-1", "api"),
       );
 
-      const scheduled = runtime.eventQueue.dequeue();
+      const scheduled = dequeueEventOfType(runtime, "request.failed");
 
       expect(scheduled?.type).toBe("request.failed");
       expect(scheduled?.timestampMs).toBe(10);
@@ -553,11 +582,173 @@ describe("DefaultEventProcessor", () => {
         createEvent("request.processing_started", 30, "req-1", "api"),
       );
 
-      const scheduled = runtime.eventQueue.dequeue();
+      const scheduled = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      );
 
       expect(scheduled?.type).toBe("request.processing_completed");
       expect(scheduled?.timestampMs).toBe(80);
       expect(runtime.getComponent("api").activeRequests).toBe(1);
+    });
+  });
+
+  describe("automatic recovery", () => {
+    it("should change health to failed and schedule recovery on failure", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("api", "api", { recoveryDelayMs: 30 })],
+        edges: [],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+
+      const scheduled = dequeueEventOfType(
+        runtime,
+        "component.recovery_scheduled",
+      );
+
+      expect(scheduled).toMatchObject({
+        type: "component.recovery_scheduled",
+        sourceNodeId: "api",
+        timestampMs: 40,
+        payload: { recoveryGeneration: 1, recoveryAtMs: 40 },
+      });
+
+      const recovery = dequeueEventOfType(runtime, "component.recovery");
+
+      expect(recovery).toMatchObject({
+        type: "component.recovery",
+        sourceNodeId: "api",
+        timestampMs: 40,
+        payload: { recoveryGeneration: 1 },
+      });
+    });
+
+    it("should not schedule recovery when recoveryDelayMs is omitted", () => {
+      const { runtime, processor } = createRuntime();
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+
+      let recoveryScheduled = false;
+
+      while (!runtime.eventQueue.isEmpty()) {
+        const event = runtime.eventQueue.dequeue();
+
+        if (
+          event.type === "component.recovery" ||
+          event.type === "component.recovery_scheduled"
+        ) {
+          recoveryScheduled = true;
+        }
+      }
+
+      expect(recoveryScheduled).toBe(false);
+    });
+
+    it("should schedule recovery at the failure timestamp plus the delay", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("api", "api", { recoveryDelayMs: 50 })],
+        edges: [],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      processor.process(createEvent("component.failed", 12, "req-1", "api"));
+
+      const scheduled = dequeueEventOfType(
+        runtime,
+        "component.recovery_scheduled",
+      );
+
+      expect(scheduled?.timestampMs).toBe(62);
+      expect(scheduled?.payload).toMatchObject({
+        recoveryAtMs: 62,
+        recoveryGeneration: 1,
+      });
+
+      const recovery = dequeueEventOfType(runtime, "component.recovery");
+
+      expect(recovery?.timestampMs).toBe(62);
+    });
+
+    it("should ignore a stale recovery event from an older generation", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("api", "api", { recoveryDelayMs: 30 })],
+        edges: [],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      // First failure → generation 1, automatic recovery scheduled at t=40.
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      // The component is manually recovered before the automatic recovery fires.
+      processor.process(createEvent("component.recovered", 20, "req-1", "api"));
+
+      // Failure again → generation 2, automatic recovery scheduled at t=60.
+      processor.process(createEvent("component.failed", 30, "req-1", "api"));
+
+      // The stale recovery event (generation 1, t=40) must be ignored.
+      const staleRecovery = createEvent(
+        "component.recovery",
+        40,
+        "req-1",
+        "api",
+      );
+      staleRecovery.payload = { recoveryGeneration: 1 };
+
+      processor.process(staleRecovery);
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+
+      // No component.recovered was scheduled by the stale event.
+      let recoveredScheduled = false;
+
+      while (!runtime.eventQueue.isEmpty()) {
+        const event = runtime.eventQueue.dequeue();
+
+        if (event.type === "component.recovered") {
+          recoveredScheduled = true;
+        }
+      }
+
+      expect(recoveredScheduled).toBe(false);
+    });
+
+    it("should recover a failed component when the generation matches", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("api", "api", { recoveryDelayMs: 30 })],
+        edges: [],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+
+      expect(runtime.getComponent("api").health).toBe("failed");
+
+      // The automatic recovery event fires and schedules component.recovered.
+      const recovery = dequeueEventOfType(runtime, "component.recovery");
+
+      processor.process(recovery!);
+
+      const recovered = dequeueEventOfType(runtime, "component.recovered");
+
+      expect(recovered).toMatchObject({
+        type: "component.recovered",
+        sourceNodeId: "api",
+        timestampMs: 40,
+      });
+
+      processor.process(recovered!);
+
+      expect(runtime.getComponent("api").health).toBe("healthy");
     });
   });
 
@@ -655,7 +846,10 @@ describe("DefaultEventProcessor", () => {
       expect(runtime.getComponent("api").health).toBe("critical");
 
       // Completing the request frees the slot → utilization 0 → healthy again.
-      const completed = runtime.eventQueue.dequeue();
+      const completed = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      );
       processor.process(completed!);
 
       expect(runtime.getComponent("api").health).toBe("healthy");
@@ -770,7 +964,10 @@ describe("DefaultEventProcessor", () => {
       createEvent("request.processing_started", 10, "req-1", "api"),
     );
 
-    const scheduled = runtime.eventQueue.dequeue();
+    const scheduled = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(scheduled?.type).toBe("request.processing_completed");
     expect(scheduled?.timestampMs).toBe(10);
@@ -861,13 +1058,12 @@ describe("DefaultEventProcessor", () => {
           createEvent("request.processing_started", 10, requestId, "api"),
         );
 
-        const scheduled = runtime.eventQueue.dequeue();
-
-        outcomes.push(
-          scheduled?.type === "request.processing_completed"
-            ? "success"
-            : "fail",
+        const scheduled = dequeueEventOfType(
+          runtime,
+          "request.processing_completed",
         );
+
+        outcomes.push(scheduled ? "success" : "fail");
       }
 
       return outcomes;
@@ -1224,14 +1420,17 @@ describe("DefaultEventProcessor", () => {
     // edges, the database completes the request without consulting routing.
     processor.process(started!);
 
-    const processingCompleted = runtime.eventQueue.dequeue();
+    const processingCompleted = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(processingCompleted?.type).toBe("request.processing_completed");
     expect(processingCompleted?.timestampMs).toBe(10);
 
     processor.process(processingCompleted!);
 
-    const completed = runtime.eventQueue.dequeue();
+    const completed = dequeueEventOfType(runtime, "request.completed");
 
     expect(completed?.type).toBe("request.completed");
     expect(completed?.timestampMs).toBe(10);
@@ -1512,7 +1711,7 @@ describe("DefaultEventProcessor", () => {
       // After recovery the destination is routable again.
       makeRequest(runtime, processor, "req-2", "lb");
 
-      expect(runtime.eventQueue.dequeue()).toMatchObject({
+      expect(dequeueEventOfType(runtime, "request.routed")).toMatchObject({
         type: "request.routed",
         targetNodeId: "api",
       });
@@ -1758,7 +1957,10 @@ describe("error rate failure lifecycle", () => {
       createEvent("request.processing_started", 10, "request-1", "api"),
     );
 
-    const completedProcessing = runtime.eventQueue.dequeue();
+    const completedProcessing = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(completedProcessing).toMatchObject({
       type: "request.processing_completed",
@@ -1768,7 +1970,7 @@ describe("error rate failure lifecycle", () => {
 
     processor.process(completedProcessing!);
 
-    const routed = runtime.eventQueue.dequeue();
+    const routed = dequeueEventOfType(runtime, "request.routed");
 
     expect(routed?.type).toBe("request.routed");
     expect(routed?.targetNodeId).toBe("database");
@@ -1776,7 +1978,10 @@ describe("error rate failure lifecycle", () => {
     // Arriving at the database starts processing immediately...
     processor.process(routed!);
 
-    const startedDatabase = runtime.eventQueue.dequeue();
+    const startedDatabase = dequeueEventOfType(
+      runtime,
+      "request.processing_started",
+    );
 
     expect(startedDatabase).toMatchObject({
       type: "request.processing_started",
@@ -1787,7 +1992,10 @@ describe("error rate failure lifecycle", () => {
     processor.process(startedDatabase!);
 
     // ...which, with no latency, completes at the same timestamp.
-    const completedDatabase = runtime.eventQueue.dequeue();
+    const completedDatabase = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(completedDatabase).toMatchObject({
       type: "request.processing_completed",
@@ -1797,7 +2005,7 @@ describe("error rate failure lifecycle", () => {
     // A terminal node completes the request after processing.
     processor.process(completedDatabase!);
 
-    const completed = runtime.eventQueue.dequeue();
+    const completed = dequeueEventOfType(runtime, "request.completed");
 
     expect(completed?.type).toBe("request.completed");
     expect(completed?.timestampMs).toBe(35);
@@ -1840,13 +2048,12 @@ describe("error rate failure lifecycle", () => {
           createEvent("request.processing_started", 10, requestId, "api"),
         );
 
-        const scheduled = runtime.eventQueue.dequeue();
-
-        outcomes.push(
-          scheduled?.type === "request.processing_completed"
-            ? "SUCCESS"
-            : "FAILURE",
+        const scheduled = dequeueEventOfType(
+          runtime,
+          "request.processing_completed",
         );
+
+        outcomes.push(scheduled ? "SUCCESS" : "FAILURE");
       }
 
       return outcomes;
@@ -1920,7 +2127,10 @@ describe("error rate failure lifecycle", () => {
 
     processor.process(startedAgain!);
 
-    const completed = runtime.eventQueue.dequeue();
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(completed).toMatchObject({
       type: "request.processing_completed",
@@ -2068,7 +2278,10 @@ describe("error rate failure lifecycle", () => {
 
     const originalProcess = processor.process.bind(processor);
     processor.process = (event) => {
-      processed.push(event.type);
+      // Observability-only health transitions are not part of the request flow.
+      if (event.type !== "component.health_changed") {
+        processed.push(event.type);
+      }
       originalProcess(event);
     };
 
@@ -2156,11 +2369,14 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
 
     const originalProcess = processor.process.bind(processor);
     processor.process = (event) => {
-      processed.push({
-        type: event.type,
-        target: event.targetNodeId,
-        timestampMs: event.timestampMs,
-      });
+      // Observability-only health transitions are not part of the request flow.
+      if (event.type !== "component.health_changed") {
+        processed.push({
+          type: event.type,
+          target: event.targetNodeId,
+          timestampMs: event.timestampMs,
+        });
+      }
       originalProcess(event);
     };
 
@@ -2287,7 +2503,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     const graph: ArchitectureGraph = {
       nodes: [
         node("client", "client"),
-        node("api", "api", { latencyMs: 5 }),
+        node("api", "api", { latencyMs: 5, recoveryDelayMs: 20 }),
         node("database", "database"),
       ],
       edges: [
@@ -2309,7 +2525,8 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     const simulation = createSimulation(graph, 42);
     simulation.config = {
       ...simulation.config,
-      failures: [{ nodeId: "api", failedAtMs: 20, recoverAtMs: 40 }],
+      // Auto-recovery kicks in 20ms after the failure at t=20 → t=40.
+      failures: [{ nodeId: "api", failedAtMs: 20 }],
     };
 
     const runtime = new SimulationRuntime(simulation);
@@ -2456,7 +2673,10 @@ describe("request queueing", () => {
     expect(runtime.getQueuedRequestCount("api")).toBe(1);
 
     // Drain A's scheduled processing_completed (from the successful start).
-    const aCompleted = runtime.eventQueue.dequeue();
+    const aCompleted = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
 
     expect(aCompleted?.type).toBe("request.processing_completed");
 
@@ -2467,7 +2687,7 @@ describe("request queueing", () => {
     expect(runtime.getQueuedRequestCount("api")).toBe(0);
 
     // A processing_started for B was scheduled.
-    const scheduled = runtime.eventQueue.dequeue();
+    const scheduled = dequeueEventOfType(runtime, "request.processing_started");
 
     expect(scheduled?.type).toBe("request.processing_started");
     expect(scheduled?.payload?.requestId).toBe("B");

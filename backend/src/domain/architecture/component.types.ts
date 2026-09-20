@@ -66,7 +66,7 @@ export interface RetryPolicy {
 }
 
 /** Runtime tuning knobs for a component, used during simulation. All fields are optional. */
-interface ComponentConfig {
+export interface ComponentConfig {
   latencyMs?: number; // Average latency in milliseconds
   capacity?: number; // Maximum number of requests that can be processed simultaneously
   concurrency?: number; // Number of concurrent operations
@@ -80,10 +80,24 @@ interface ComponentConfig {
   retryPolicy?: RetryPolicy;
   traffic?: number; // Requests per second handled
   health?: RuntimeComponentHealth;
-  /** Which load-balancing algorithm to use when this node forwards requests downstream. Defaults to round-robin if omitted. */
+
+  /** Which load-balancing algorithm to use when this node forwards requests downstream.
+   * Defaults to round-robin if omitted.
+   */
   routingStrategy?: RoutingStrategyType;
-  /** Health thresholds used for automatic health evaluation. Falls back to DEFAULT_HEALTH_THRESHOLDS when omitted. */
+
+  /** Health thresholds used for automatic health evaluation.
+   * Falls back to DEFAULT_HEALTH_THRESHOLDS when omitted.
+   */
   healthThresholds?: ComponentHealthThresholds;
+
+  /**
+   * Amount of simulation time a failed component remains unavailable
+   * before it automatically recovers.
+   *
+   * If omitted, the component does not automatically recover.
+   */
+  recoveryDelayMs?: number;
 }
 
 export type RuntimeComponentHealth =

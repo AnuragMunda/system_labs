@@ -75,24 +75,6 @@ describe("FailureScheduler", () => {
     });
   });
 
-  it("should schedule a component.recovered event at the recovery time", () => {
-    const { events } = scheduleFailures([
-      { nodeId: "api", failedAtMs: 50, recoverAtMs: 80 },
-    ]);
-
-    expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({
-      type: "component.failed",
-      timestampMs: 50,
-      sourceNodeId: "api",
-    });
-    expect(events[1]).toMatchObject({
-      type: "component.recovered",
-      timestampMs: 80,
-      sourceNodeId: "api",
-    });
-  });
-
   it("should not schedule recovery when no recovery time is given", () => {
     const { events } = scheduleFailures([{ nodeId: "api", failedAtMs: 50 }]);
 
@@ -103,16 +85,13 @@ describe("FailureScheduler", () => {
 
   it("should schedule failures for every configured entry", () => {
     const { events } = scheduleFailures([
-      { nodeId: "api", failedAtMs: 10, recoverAtMs: 20 },
+      { nodeId: "api", failedAtMs: 10 },
       { nodeId: "api", failedAtMs: 50 },
     ]);
 
     expect(
       events.filter((event) => event.type === "component.failed"),
     ).toHaveLength(2);
-    expect(
-      events.filter((event) => event.type === "component.recovered"),
-    ).toHaveLength(1);
   });
 
   it("should schedule nothing when no failures are configured", () => {
@@ -133,27 +112,10 @@ describe("FailureScheduler", () => {
     },
   );
 
-  it.each<FailureSchedule>([
-    { nodeId: "api", failedAtMs: 50, recoverAtMs: 1000 },
-    { nodeId: "api", failedAtMs: 50, recoverAtMs: 1500 },
-  ])("should throw when a failure time is invalid ($failedAtMs)", (failure) => {
-    expect(() => scheduleFailures([failure], 1000)).toThrow();
-  });
-
   it("should throw when failedAtMs is negative", () => {
     expect(() => scheduleFailures([{ nodeId: "api", failedAtMs: -1 }])).toThrow(
       "Failure time cannot be negative: -1",
     );
-  });
-
-  it("should throw when recovery is not later than the failure time", () => {
-    expect(() =>
-      scheduleFailures([{ nodeId: "api", failedAtMs: 50, recoverAtMs: 50 }]),
-    ).toThrow("Recovery time 50 must be greater than failure time 50.");
-
-    expect(() =>
-      scheduleFailures([{ nodeId: "api", failedAtMs: 50, recoverAtMs: 30 }]),
-    ).toThrow("Recovery time 30 must be greater than failure time 50.");
   });
 
   it("should throw when the failure targets an unknown node", () => {

@@ -23,7 +23,10 @@ export type SimulationEventType =
   | "worker.started"
   | "worker.completed"
   | "component.failed"
-  | "component.recovered";
+  | "component.recovery"
+  | "component.recovered"
+  | "component.health_changed"
+  | "component.recovery_scheduled";
 
 /** A single timestamped event produced while running a simulation. */
 export interface SimulationEvent {
