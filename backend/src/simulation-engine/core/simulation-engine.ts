@@ -12,6 +12,7 @@ import { EventProcessor } from "../types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
 import { TrafficGenerator } from "./traffic-generator.js";
 import { FailureScheduler } from "./failure-scheduler.js";
+import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its
@@ -25,6 +26,7 @@ export class SimulationEngine {
     private readonly eventProcessor: EventProcessor,
     private readonly trafficGenerator: TrafficGenerator,
     private readonly failureScheduler: FailureScheduler,
+    private readonly autoscalingScheduler: AutoscalingScheduler,
   ) {}
 
   /** Queues an event onto the runtime for future processing. */
@@ -184,6 +186,22 @@ export class SimulationEngine {
     }
 
     this.failureScheduler.schedule();
+  }
+
+  /**
+   * Queues the initial autoscaling evaluations for all autoscaling-enabled
+   * components.
+   *
+   * Must be called while the simulation is still created.
+   */
+  initializeAutoscaling(): void {
+    if (this.runtime.simulation.status !== "created") {
+      throw new Error(
+        `Autoscaling cannot be initialized from status ${this.runtime.simulation.status}`,
+      );
+    }
+
+    this.autoscalingScheduler.schedule();
   }
 
   /**

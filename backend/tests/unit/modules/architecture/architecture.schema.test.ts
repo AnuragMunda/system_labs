@@ -225,6 +225,85 @@ describe("architectureSchema", () => {
   });
 });
 
+describe("architectureSchema autoscaling config", () => {
+  const nodeWithAutoscaling = (autoscaling: unknown) => ({
+    ...validArchitecture.nodes[1]!,
+    config: {
+      ...validArchitecture.nodes[1]!.config,
+      autoscaling,
+    },
+  });
+
+  const payloadWith = (autoscaling: unknown) => ({
+    ...validArchitecture,
+    nodes: [nodeWithAutoscaling(autoscaling)],
+  });
+
+  it("accepts a valid autoscaling configuration", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1, max: 5, targetCpu: 50 }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("accepts an autoscaling configuration with equal min and max", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1, max: 1, targetCpu: 50 }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects a min below 1", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 0, max: 5, targetCpu: 50 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a max below 1", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1, max: 0, targetCpu: 50 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a max below min", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 5, max: 2, targetCpu: 50 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a negative targetCpu", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1, max: 5, targetCpu: -1 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a targetCpu above 100", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1, max: 5, targetCpu: 101 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a non-integer min", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWith({ enabled: true, min: 1.5, max: 5, targetCpu: 50 }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
 describe("updateArchitectureSchema", () => {
   it("accepts an empty object", () => {
     const result = updateArchitectureSchema.safeParse({});

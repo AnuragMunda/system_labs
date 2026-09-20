@@ -2,6 +2,7 @@ import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js"
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
 import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
+import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
 import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
 import { RandomStrategy } from "@/simulation-engine/routing/random-strategy.js";
 import { LeastConnectionsStrategy } from "@/simulation-engine/routing/least-connections-strategy.js";
@@ -59,6 +60,7 @@ function createFixture() {
     eventProcessor,
     new TrafficGenerator(runtime),
     new FailureScheduler(runtime),
+    new AutoscalingScheduler(runtime),
   );
 
   return { simulation, runtime, engine, eventProcessor };
@@ -862,6 +864,7 @@ describe("SimulationEngine", () => {
       { process: vi.fn() },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     expect(() => engine.run()).toThrow(
@@ -877,6 +880,7 @@ describe("SimulationEngine", () => {
       { process: vi.fn() },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     expect(() => engine.run()).toThrow(
@@ -904,6 +908,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-a", 100));
@@ -926,6 +931,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-1", 100));
@@ -947,6 +953,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-a", 100));
@@ -995,6 +1002,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-a", 100));
@@ -1019,6 +1027,7 @@ describe("SimulationEngine", () => {
         { process: processEvent },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       engine.schedule(createEvent("event-a", 100));
@@ -1136,6 +1145,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-a", 100));
@@ -1301,6 +1311,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       expect(() => engine.pause()).toThrow(
@@ -1319,6 +1330,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       expect(() => engine.resume()).toThrow(
@@ -1337,6 +1349,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       expect(() => engine.cancel()).toThrow(
@@ -1446,6 +1459,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       expect(() => engine.start()).toThrow(
@@ -1555,6 +1569,7 @@ describe("SimulationEngine", () => {
       { process: processEvent },
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.schedule(createEvent("event-a", 100));
@@ -1588,6 +1603,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       engine.initializeTraffic("client");
@@ -1603,6 +1619,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       engine.initializeTraffic("client");
@@ -1627,6 +1644,7 @@ describe("SimulationEngine", () => {
         eventProcessor,
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       engine.initializeTraffic("client");
@@ -1651,6 +1669,7 @@ describe("SimulationEngine", () => {
           { process: vi.fn() },
           new TrafficGenerator(runtime),
           new FailureScheduler(runtime),
+          new AutoscalingScheduler(runtime),
         );
 
         expect(() => engine.initializeTraffic("client")).toThrow(
@@ -1689,6 +1708,7 @@ describe("SimulationEngine", () => {
         { process: vi.fn() },
         new TrafficGenerator(runtime),
         new FailureScheduler(runtime),
+        new AutoscalingScheduler(runtime),
       );
 
       engine.initializeFailures();
@@ -1715,6 +1735,7 @@ describe("SimulationEngine", () => {
           { process: vi.fn() },
           new TrafficGenerator(runtime),
           new FailureScheduler(runtime),
+          new AutoscalingScheduler(runtime),
         );
 
         expect(() => engine.initializeFailures()).toThrow(

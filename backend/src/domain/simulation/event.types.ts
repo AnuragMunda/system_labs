@@ -26,7 +26,9 @@ export type SimulationEventType =
   | "component.recovery"
   | "component.recovered"
   | "component.health_changed"
-  | "component.recovery_scheduled";
+  | "component.recovery_scheduled"
+  | "component.scaled"
+  | "autoscaling.evaluate";
 
 /** A single timestamped event produced while running a simulation. */
 export interface SimulationEvent {

@@ -289,6 +289,33 @@ export class SimulationRuntime {
     return this.getComponent(nodeId).recoveryGeneration;
   }
 
+  /**
+   * Updates the current runtime replica count for a component.
+   *
+   * The configured replica count remains the initial replica count;
+   * this value represents the current simulated replica count.
+   */
+  setComponentReplicas(nodeId: string, replicas: number): void {
+    if (!Number.isInteger(replicas) || replicas < 1) {
+      throw new Error(
+        `Component replicas must be a positive integer: ${replicas}`,
+      );
+    }
+
+    const node = this.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const concurrency = node.config.concurrency ?? 1;
+
+    this.updateComponent(nodeId, {
+      replicas,
+      effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // ROUTING
   // ---------------------------------------------------------------------------
@@ -347,9 +374,16 @@ export class SimulationRuntime {
   /**
    * Initializes runtime state for every component in the
    * architecture snapshot.
+   *
+   * The effective concurrency comes from the snapshot's config rather than
+   * {@link getEffectiveConcurrency}, which reads component runtime state that
+   * does not exist yet while components are still being registered.
    */
   private initializeComponents(): void {
     for (const node of this.simulation.architectureSnapshot.nodes) {
+      const replicas = node.config.replicas ?? 1;
+      const concurrency = node.config.concurrency ?? 1;
+
       this.components.set(node.id, {
         nodeId: node.id,
         health: node.config.health ?? "healthy",
@@ -358,7 +392,8 @@ export class SimulationRuntime {
         totalProcessingAttempts: 0,
         failedProcessingAttempts: 0,
         totalProcessingLatencyMs: 0,
-        effectiveConcurrency: this.getEffectiveConcurrency(node.id),
+        replicas,
+        effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
         recoveryGeneration: 0,
       });
     }
@@ -420,10 +455,10 @@ export class SimulationRuntime {
       throw new Error(`Node not found: ${nodeId}.`);
     }
 
-    const replicas = node.config.replicas ?? 1;
+    const component = this.getComponent(nodeId);
     const concurrency = node.config.concurrency ?? 1;
 
-    return getEffectiveConcurrency(replicas, concurrency);
+    return getEffectiveConcurrency(component.replicas, concurrency);
   }
 
   /**

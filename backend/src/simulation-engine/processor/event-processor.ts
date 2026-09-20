@@ -13,9 +13,15 @@ import { getNetworkLatency } from "../network/network-latency.js";
 import { canRetry, DEFAULT_RETRY_DELAY_MS, shouldFail } from "../helper.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { ComponentRuntimeState } from "../components/component-runtime-state.js";
+import { AutoscalingController } from "../autoscaling/autoscaling-controller.js";
+import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
 
 export class DefaultEventProcessor implements EventProcessor {
-  constructor(private readonly runtime: SimulationRuntime) {}
+  constructor(
+    private readonly runtime: SimulationRuntime,
+    private readonly autoscalingController: AutoscalingController,
+    private readonly autoscalingScheduler: AutoscalingScheduler,
+  ) {}
 
   process(event: SimulationEvent): void {
     switch (event.type) {
@@ -66,6 +72,15 @@ export class DefaultEventProcessor implements EventProcessor {
       // component.recovery_scheduled is observability-only and intentionally
       // has no handler; it shares the timestamp and payload data of the
       // component.recovery event it accompanies.
+
+      case "autoscaling.evaluate":
+        this.handleAutoscalingEvaluate(event);
+        break;
+
+      case "component.scaled":
+        this.handleComponentScaled(event);
+        break;
+
       default:
         break;
     }
@@ -521,6 +536,89 @@ export class DefaultEventProcessor implements EventProcessor {
     this.runtime.setComponentHealth(nodeId, "healthy");
 
     this.scheduleHealthChanged(event, nodeId, previousHealth, "healthy");
+  }
+
+  // ---------------------------------------------------------------------------
+  // autoscaling.evaluate
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Evaluates the component's current load and schedules a scaling event when
+   * the utilization is outside the configured autoscaling target band.
+   *
+   * The next evaluation is always scheduled after the current evaluation,
+   * making autoscaling periodic and simulation-time driven.
+   */
+  private handleAutoscalingEvaluate(event: SimulationEvent): void {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
+      throw new Error("autoscaling.evaluate event requires a sourceNodeId.");
+    }
+
+    this.autoscalingController.evaluate(event);
+
+    this.autoscalingScheduler.scheduleNext(nodeId, event.timestampMs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.scaled
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Applies a previously evaluated autoscaling decision to the component's
+   * runtime state.
+   *
+   * Scaling never cancels active requests. It only changes the capacity
+   * available to subsequent processing attempts.
+   */
+  private handleComponentScaled(event: SimulationEvent): void {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
+      throw new Error("component.scaled event requires a sourceNodeId.");
+    }
+
+    const replicas = event.payload?.replicas;
+
+    if (
+      typeof replicas !== "number" ||
+      !Number.isInteger(replicas) ||
+      replicas < 1
+    ) {
+      throw new Error(
+        "component.scaled event requires a positive integer replicas value.",
+      );
+    }
+
+    const node = this.runtime.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const autoscaling = node.config.autoscaling;
+
+    if (!autoscaling?.enabled) {
+      return;
+    }
+
+    // The component may have failed between evaluation and application.
+    // Do not scale a failed component.
+    const component = this.runtime.getComponent(nodeId);
+
+    if (component.health === "failed") {
+      return;
+    }
+
+    if (replicas < autoscaling.min || replicas > autoscaling.max) {
+      throw new Error(
+        `Component ${nodeId} replicas ${replicas} are outside autoscaling bounds ` +
+          `[${autoscaling.min}, ${autoscaling.max}].`,
+      );
+    }
+
+    this.runtime.setComponentReplicas(nodeId, replicas);
   }
 
   // ---------------------------------------------------------------------------

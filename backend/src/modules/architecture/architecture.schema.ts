@@ -41,13 +41,19 @@ const positionSchema = z.object({
   y: z.number(),
 });
 
-/** Optional autoscaling bounds for a component. */
+/**
+ * Optional autoscaling bounds for a component. Min/max are positive integers
+ * with max >= min; the target utilization is a percentage in 0..100.
+ */
 const autoscalingSchema = z
   .object({
     enabled: z.boolean(),
-    min: z.number().int().nonnegative(),
-    max: z.number().int().nonnegative(),
+    min: z.number().int().min(1),
+    max: z.number().int().min(1),
     targetCpu: z.number().min(0).max(100),
+  })
+  .refine((config) => config.max >= config.min, {
+    message: "Autoscaling max must be greater than or equal to min",
   })
   .optional();
 

@@ -4,6 +4,9 @@ export interface ComponentRuntimeState {
   nodeId: string;
   health: RuntimeComponentHealth;
 
+  replicas: number;
+  effectiveConcurrency: number; // Max requests processable concurrently (replicas * concurrency).
+
   activeRequests: number; // Number of requests currently being processed.
   processedRequests: number; // Total number of requests successfully processed.
 
@@ -12,8 +15,6 @@ export interface ComponentRuntimeState {
 
   totalProcessingLatencyMs: number; // Cumulative processing latency for completed requests.
   lastProcessingLatencyMs?: number; // Latency of the most recently completed request.
-
-  effectiveConcurrency: number; // Max requests processable concurrently (replicas * concurrency).
 
   recoveryGeneration: number; // Identifies the current failure/recovery cycle.
 }

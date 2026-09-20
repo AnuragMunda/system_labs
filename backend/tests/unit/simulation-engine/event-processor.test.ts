@@ -3,6 +3,8 @@ import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.j
 import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
 import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
+import { AutoscalingController } from "@/simulation-engine/autoscaling/autoscaling-controller.js";
+import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
@@ -112,7 +114,11 @@ function createRuntime(
   seed: number = 42,
 ) {
   const runtime = new SimulationRuntime(createSimulation(graph, seed));
-  const processor = new DefaultEventProcessor(runtime);
+  const processor = new DefaultEventProcessor(
+    runtime,
+    new AutoscalingController(runtime),
+    new AutoscalingScheduler(runtime),
+  );
 
   return { runtime, processor };
 }
@@ -1893,12 +1899,17 @@ describe("error rate failure lifecycle", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     runtime.createRequest({
@@ -2210,12 +2221,17 @@ describe("error rate failure lifecycle", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // Failed attempts must never increment the component's active count.
@@ -2261,12 +2277,17 @@ describe("error rate failure lifecycle", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // Attempt 1 fails, the retry succeeds.
@@ -2344,12 +2365,17 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // The traffic generator creates the request before request.created fires.
@@ -2447,12 +2473,17 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     };
 
     const runtime = new SimulationRuntime(simulation);
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // The traffic generator populates the request, and the processor then
@@ -2473,12 +2504,17 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     // The default graph (client -> api -> database) has exactly one edge per
     // node and no routingStrategy configured anywhere.
     const runtime = new SimulationRuntime(createSimulation());
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
@@ -2530,12 +2566,17 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
     };
 
     const runtime = new SimulationRuntime(simulation);
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     engine.initializeFailures();
@@ -2594,12 +2635,17 @@ describe("request queueing", () => {
 
   it("should queue a request instead of failing at capacity", () => {
     const runtime = new SimulationRuntime(createSimulation(queueGraph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     const eventTypes: string[] = [];
@@ -2701,12 +2747,17 @@ describe("request queueing", () => {
 
   it("should process three requests in FIFO order", () => {
     const runtime = new SimulationRuntime(createSimulation(queueGraph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     const completed: string[] = [];
@@ -2758,12 +2809,17 @@ describe("request queueing", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // effectiveConcurrency = 2 replicas * 2 concurrency = 4.
@@ -2810,12 +2866,17 @@ describe("request queueing", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     // All random rolls produce failures (0.4 < errorRate 1.0).
@@ -2878,12 +2939,17 @@ describe("request queueing", () => {
     };
 
     const runtime = new SimulationRuntime(createSimulation(graph));
-    const processor = new DefaultEventProcessor(runtime);
+    const processor = new DefaultEventProcessor(
+      runtime,
+      new AutoscalingController(runtime),
+      new AutoscalingScheduler(runtime),
+    );
     const engine = new SimulationEngine(
       runtime,
       processor,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
+      new AutoscalingScheduler(runtime),
     );
 
     const effectiveConcurrency = runtime.getEffectiveConcurrency("api");
