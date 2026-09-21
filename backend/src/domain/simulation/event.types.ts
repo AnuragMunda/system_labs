@@ -20,6 +20,7 @@ export type SimulationEventType =
   | "database.request"
   | "queue.enqueue"
   | "queue.dequeue"
+  | "queue.drain"
   | "worker.started"
   | "worker.completed"
   | "component.failed"

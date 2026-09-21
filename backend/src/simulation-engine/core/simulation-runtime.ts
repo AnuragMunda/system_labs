@@ -20,6 +20,7 @@ import { ComponentHealthEvaluator } from "../components/health/component-health-
 import {
   ComponentHealthStateChange,
   ComponentRuntimeState,
+  QueueAdmissionResult,
   RoutingContext,
   RoutingStrategy,
 } from "../utils/types.js";
@@ -356,9 +357,75 @@ export class SimulationRuntime {
   // COMPONENT REQUEST QUEUE
   // ---------------------------------------------------------------------------
 
-  /** Append a request to the back of the given component's queue. */
-  enqueueRequest(nodeId: string, requestId: string): void {
+  /**
+   * Attempts to append a request to the back of the given component's queue.
+   *
+   * @param nodeId    - The component node identifier; must exist in the
+   *   topology.
+   * @param requestId - The request to enqueue.
+   * @returns The admission result describing the outcome.
+   * @throws {Error} If `nodeId` is not in the topology, or `maxSize` is not a
+   *   non-negative integer.
+   */
+  enqueueRequest(nodeId: string, requestId: string): QueueAdmissionResult {
+    const node = this.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const queueConfig = node.config.queue;
+
+    if (queueConfig?.enabled === false) {
+      return {
+        admitted: false,
+        reason: "queue_disabled",
+      };
+    }
+
+    const maxSize = queueConfig?.maxSize;
+
+    if (maxSize !== undefined && (!Number.isInteger(maxSize) || maxSize < 0)) {
+      throw new Error(
+        `Queue maxSize must be a non-negative integer: ${maxSize}`,
+      );
+    }
+
+    const currentSize = this.getQueuedRequestCount(nodeId);
+
+    if (maxSize !== undefined && currentSize >= maxSize) {
+      const overflowStrategy = queueConfig?.overflowStrategy ?? "reject";
+
+      if (overflowStrategy === "reject") {
+        return {
+          admitted: false,
+          reason: "queue_full",
+        };
+      }
+
+      if (overflowStrategy === "drop_oldest") {
+        const droppedRequestId = this.dequeueRequest(nodeId);
+
+        if (!droppedRequestId) {
+          throw new Error(
+            `Queue ${nodeId} reported full but contained no request.`,
+          );
+        }
+
+        this.componentRequestQueue.enqueue(nodeId, requestId);
+
+        return {
+          admitted: true,
+          droppedRequestId,
+        };
+      }
+    }
+
     this.componentRequestQueue.enqueue(nodeId, requestId);
+
+    return {
+      admitted: true,
+    };
   }
 
   /** Remove and return the next request from a component's queue, or `undefined` if empty. */

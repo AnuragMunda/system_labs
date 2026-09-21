@@ -397,6 +397,122 @@ describe("DefaultEventProcessor autoscaling events", () => {
     expect(() => processor.process(missingSource)).toThrow(/sourceNodeId/);
     expect(runtime.getComponent("api").replicas).toBe(2);
   });
+
+  it("should schedule a queue.drain on a scale-up when requests are queued", () => {
+    const { runtime, processor } = createRuntime(
+      [
+        node("api", "api", {
+          replicas: 2,
+          concurrency: 5,
+          autoscaling: autoscaling(),
+          queue: { maxSize: 10 },
+        }),
+      ],
+      { durationMs: 5000 },
+    );
+
+    runtime.enqueueRequest("api", "req-1");
+
+    processor.process(scaledEvent("api", 1000, 3));
+
+    const events = drainEvents(runtime);
+    const drain = events.find((event) => event.type === "queue.drain");
+
+    expect(drain).toBeDefined();
+    expect(drain?.sourceNodeId).toBe("api");
+    expect(drain?.timestampMs).toBe(1000);
+
+    expect(runtime.getComponent("api").replicas).toBe(3);
+  });
+
+  it("should not schedule a queue.drain on a scale-up when nothing is queued", () => {
+    const { runtime, processor } = createRuntime(
+      [
+        node("api", "api", {
+          replicas: 2,
+          concurrency: 5,
+          autoscaling: autoscaling(),
+        }),
+      ],
+      { durationMs: 5000 },
+    );
+
+    processor.process(scaledEvent("api", 1000, 3));
+
+    const events = drainEvents(runtime);
+
+    expect(events.some((event) => event.type === "queue.drain")).toBe(false);
+  });
+
+  it("should not schedule a queue.drain on a scale-down even when requests are queued", () => {
+    const { runtime, processor } = createRuntime(
+      [
+        node("api", "api", {
+          replicas: 3,
+          concurrency: 5,
+          autoscaling: autoscaling(),
+          queue: { maxSize: 10 },
+        }),
+      ],
+      { durationMs: 5000 },
+    );
+
+    runtime.enqueueRequest("api", "req-1");
+
+    processor.process(scaledEvent("api", 1000, 2));
+
+    const events = drainEvents(runtime);
+
+    expect(events.some((event) => event.type === "queue.drain")).toBe(false);
+    expect(runtime.getComponent("api").replicas).toBe(2);
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
+  });
+
+  it("should start queued requests after a scale-up drain", () => {
+    const { runtime, processor } = createRuntime(
+      [
+        node("api", "api", {
+          replicas: 2,
+          concurrency: 1,
+          autoscaling: autoscaling(),
+          queue: { maxSize: 10 },
+        }),
+      ],
+      { durationMs: 5000 },
+    );
+
+    runtime.enqueueRequest("api", "req-1");
+    runtime.enqueueRequest("api", "req-2");
+
+    processor.process(scaledEvent("api", 1000, 3));
+
+    const drain = drainEvents(runtime).find(
+      (event) => event.type === "queue.drain",
+    );
+
+    expect(drain).toBeDefined();
+
+    processor.process(drain!);
+
+    // The scale-up frees capacity 3*1 = 3, so both queued requests start
+    // (FIFO), each preceded by its own queue.dequeue event.
+    const drainEventsAfter = drainEvents(runtime)
+      .filter(
+        (event) =>
+          event.type === "queue.dequeue" ||
+          event.type === "request.processing_started",
+      )
+      .map((event) => `${event.type}:${event.payload?.requestId}`);
+
+    expect(drainEventsAfter).toEqual([
+      "queue.dequeue:req-1",
+      "request.processing_started:req-1",
+      "queue.dequeue:req-2",
+      "request.processing_started:req-2",
+    ]);
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+  });
 });
 
 describe("SimulationEngine autoscaling", () => {

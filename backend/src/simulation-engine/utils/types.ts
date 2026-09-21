@@ -76,3 +76,17 @@ export interface ComponentHealthStateChange {
   previousHealth: RuntimeComponentHealth;
   health: RuntimeComponentHealth;
 }
+
+/**
+ * The result of a queue admission attempt (see
+ * {@link SimulationRuntime.enqueueRequest}).
+ */
+export type QueueAdmissionResult =
+  | {
+      admitted: true;
+      droppedRequestId?: string;
+    }
+  | {
+      admitted: false;
+      reason: "queue_full" | "queue_disabled";
+    };

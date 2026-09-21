@@ -75,6 +75,12 @@ export interface ComponentConfig {
   cpu?: number; // CPU cores per replica
   memory?: number; // Memory in GB per replica
   autoscaling?: AutoscalingConfig;
+
+  /** Queue and backpressure behavior when the component is at full capacity.
+   * Defaults to no queueing when omitted.
+   */
+  queue?: ComponentQueueConfig;
+
   region?: string;
   timeoutMs?: number;
   retryPolicy?: RetryPolicy;
@@ -102,3 +108,17 @@ export interface ComponentConfig {
 
 export type RuntimeComponentHealth =
   "healthy" | "degraded" | "critical" | "failed";
+
+/** How the queue behaves once it has reached `maxSize`. */
+export type QueueOverflowStrategy = "reject" | "drop_oldest";
+
+/** Queue and backpressure configuration for a component. */
+export interface ComponentQueueConfig {
+  /** Whether requests may be queued at all. */
+  enabled?: boolean;
+  /** Maximum number of requests that can wait in the queue. Omitted means the
+   * queue is unbounded. */
+  maxSize?: number;
+  /** Strategy applied when the queue is full. Defaults to `"reject"`. */
+  overflowStrategy?: QueueOverflowStrategy;
+}

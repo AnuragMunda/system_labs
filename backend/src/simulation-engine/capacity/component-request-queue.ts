@@ -20,7 +20,14 @@ export class ComponentRequestQueue {
   enqueue(nodeId: string, requestId: string): void {
     const queue = this.queues.get(nodeId) ?? [];
 
+    if (queue.includes(requestId)) {
+      throw new Error(
+        `Request ${requestId} is already queued for component ${nodeId}.`,
+      );
+    }
+
     queue.push(requestId);
+
     this.queues.set(nodeId, queue);
   }
 

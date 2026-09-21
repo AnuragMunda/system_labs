@@ -72,6 +72,26 @@ describe("ComponentRequestQueue", () => {
     expect(queue.size("worker")).toBe(0);
   });
 
+  it("should reject a duplicate request without mutating the queue", () => {
+    const queue = new ComponentRequestQueue();
+
+    queue.enqueue("api", "A");
+    queue.enqueue("api", "B");
+
+    expect(() => queue.enqueue("api", "A")).toThrow(
+      "Request A is already queued for component api.",
+    );
+
+    // The rejected duplicate must leave the queue untouched.
+    expect(queue.size("api")).toBe(2);
+    expect(queue.dequeue("api")).toBe("A");
+    expect(queue.dequeue("api")).toBe("B");
+
+    // A distinct request can still be enqueued afterwards.
+    queue.enqueue("api", "C");
+    expect(queue.dequeue("api")).toBe("C");
+  });
+
   it("should clean up the internal queue entry when the last request is dequeued", () => {
     const queue = new ComponentRequestQueue();
 

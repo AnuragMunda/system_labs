@@ -378,8 +378,18 @@ describe("DefaultEventProcessor", () => {
       createEvent("request.processing_started", 10, "req-1", "api"),
     );
 
-    // Nothing was scheduled — the request was queued instead of rejected.
-    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    // The request was admitted to the queue: a queue.enqueue event is
+    // scheduled and the request transitions to the queued state.
+    const scheduled = dequeueEventOfType(runtime, "queue.enqueue");
+
+    expect(scheduled?.type).toBe("queue.enqueue");
+    expect(scheduled?.sourceNodeId).toBe("api");
+    expect(scheduled?.payload?.requestId).toBe("req-1");
+
+    const request = runtime.getRequest("req-1");
+    expect(request.status).toBe("queued");
+    expect(request.currentNodeId).toBe("api");
+
     expect(runtime.getQueuedRequestCount("api")).toBe(1);
 
     // The queue did not consume capacity, so the active count is unchanged.
@@ -477,11 +487,16 @@ describe("DefaultEventProcessor", () => {
 
       expect(runtime.getQueuedRequestCount("api")).toBe(1);
 
-      // Completing the first request decrements the active count, releases
-      // the slot, and dequeues the next request.
+      // Completing the first request decrements the active count and releases
+      // the slot, scheduling a drain of the queued requests.
       processor.process({ ...completed });
 
       expect(runtime.getComponent("api").activeRequests).toBe(0);
+
+      // Processing the drain starts the queued request.
+      const drain = dequeueEventOfType(runtime, "queue.drain");
+      expect(drain?.type).toBe("queue.drain");
+      processor.process({ ...drain });
 
       // The queued request was scheduled for processing.
       const nextProcessing = dequeueEventOfType(
@@ -491,6 +506,334 @@ describe("DefaultEventProcessor", () => {
 
       expect(nextProcessing?.type).toBe("request.processing_started");
       expect(nextProcessing?.payload?.requestId).toBe("req-3");
+    });
+  });
+
+  describe("queue admission & backpressure", () => {
+    it("should reject a request when the queue is disabled", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            concurrency: 1,
+            queue: { enabled: false },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.incrementActiveRequests("api");
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const failed = dequeueEventOfType(runtime, "request.failed");
+
+      expect(failed).toMatchObject({
+        type: "request.failed",
+        payload: { requestId: "req-1", reason: "queue_disabled" },
+      });
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(0);
+    });
+
+    it("should reject the newest request with queue_overflow when the queue is full (reject strategy)", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            concurrency: 1,
+            queue: { maxSize: 1 },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.incrementActiveRequests("api");
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-2",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // req-1 fills the single queue slot.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
+
+      // req-2 is rejected: the queue is full and the default strategy is reject.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-2", "api"),
+      );
+
+      const failed = dequeueEventOfType(runtime, "request.failed");
+
+      expect(failed).toMatchObject({
+        type: "request.failed",
+        payload: { requestId: "req-2", reason: "queue_overflow" },
+      });
+
+      processor.process({ ...failed });
+
+      expect(runtime.getRequest("req-2").status).toBe("failed");
+
+      // The queued request is undisturbed.
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
+      expect(runtime.dequeueRequest("api")).toBe("req-1");
+    });
+
+    it("should evict the oldest queued request with drop_oldest when the queue is full", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            concurrency: 1,
+            queue: { maxSize: 1, overflowStrategy: "drop_oldest" },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.incrementActiveRequests("api");
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-2",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
+
+      // req-2 evicts req-1 from the full queue.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-2", "api"),
+      );
+
+      // The evicted request fails with queue_overflow.
+      const failed = dequeueEventOfType(runtime, "request.failed");
+
+      expect(failed).toMatchObject({
+        type: "request.failed",
+        payload: { requestId: "req-1", reason: "queue_overflow" },
+      });
+
+      processor.process({ ...failed });
+
+      expect(runtime.getRequest("req-1").status).toBe("failed");
+
+      // req-2 now occupies the queue and was never started directly.
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
+      expect(runtime.getRequest("req-2").status).toBe("queued");
+      expect(runtime.dequeueRequest("api")).toBe("req-2");
+    });
+
+    it("should drain the queue on processing_completed and start queued requests in FIFO order", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            concurrency: 1,
+            queue: { maxSize: 2 },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-2",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      runtime.createRequest({
+        id: "req-3",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      // req-1 takes the slot; req-2 and req-3 queue behind it.
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-2", "api"),
+      );
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-3", "api"),
+      );
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(2);
+
+      const completed = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      );
+
+      processor.process({ ...completed });
+
+      // The freed slot is offered to the queue through a single drain event.
+      const drain = dequeueEventOfType(runtime, "queue.drain");
+
+      expect(drain?.type).toBe("queue.drain");
+      expect(drain?.sourceNodeId).toBe("api");
+
+      processor.process({ ...drain });
+
+      // Only the single freed slot is filled: req-2 starts, req-3 waits.
+      const started = dequeueEventOfType(runtime, "request.processing_started");
+
+      expect(started?.type).toBe("request.processing_started");
+      expect(started?.payload?.requestId).toBe("req-2");
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
+    });
+
+    it("should drain only up to the available capacity", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", {
+            concurrency: 1,
+            queue: { maxSize: 10 },
+          }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      // Seed the queue directly; capacity 1 means only one can start.
+      runtime.enqueueRequest("api", "req-1");
+      runtime.enqueueRequest("api", "req-2");
+      runtime.enqueueRequest("api", "req-3");
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(3);
+
+      processor.process(createEvent("queue.drain", 20, "req-1", "api"));
+
+      const started = dequeueEventOfType(runtime, "request.processing_started");
+
+      expect(started?.payload?.requestId).toBe("req-1");
+
+      // Two requests remain queued behind the started one.
+      expect(runtime.getQueuedRequestCount("api")).toBe(2);
+    });
+
+    it("should not schedule queue.drain on processing_completed when nothing is queued", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [node("client", "client"), node("api", "api", { latencyMs: 0 })],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.createRequest({
+        id: "req-1",
+        status: "in-flight",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+
+      processor.process(
+        createEvent("request.processing_started", 10, "req-1", "api"),
+      );
+
+      const completed = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      );
+
+      processor.process({ ...completed });
+
+      let drainScheduled = false;
+
+      while (!runtime.eventQueue.isEmpty()) {
+        const event = runtime.eventQueue.dequeue();
+
+        if (event.type === "queue.drain") {
+          drainScheduled = true;
+        }
+      }
+
+      expect(drainScheduled).toBe(false);
+    });
+
+    it("should not drain a queue when the component is failed", () => {
+      const graph: ArchitectureGraph = {
+        nodes: [
+          node("client", "client"),
+          node("api", "api", { concurrency: 1 }),
+        ],
+        edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+      };
+
+      const { runtime, processor } = createRuntime(graph);
+
+      runtime.enqueueRequest("api", "req-1");
+
+      processor.process(createEvent("component.failed", 10, "req-1", "api"));
+      processor.process(createEvent("queue.drain", 20, "req-1", "api"));
+
+      expect(runtime.getQueuedRequestCount("api")).toBe(1);
     });
   });
 
@@ -2726,10 +3069,15 @@ describe("request queueing", () => {
 
     expect(aCompleted?.type).toBe("request.processing_completed");
 
-    // Manually process A's completion → slot released, B dequeued.
+    // Manually process A's completion → slot released and a drain scheduled.
     processor.process(aCompleted!);
 
     expect(runtime.getComponent("api").activeRequests).toBe(0);
+
+    // Processing the drain dequeues B.
+    const drain = dequeueEventOfType(runtime, "queue.drain");
+    processor.process(drain!);
+
     expect(runtime.getQueuedRequestCount("api")).toBe(0);
 
     // A processing_started for B was scheduled.

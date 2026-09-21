@@ -123,8 +123,76 @@ export class RequestLifecycleHandlers {
       return;
     }
 
+    // 3. Admit to the component queue when there is no remaining capacity.
+    //
+    //    Admission is delegated to the runtime, which applies the component's
+    //    `queue` configuration:
+    //    - admitted           → the request is marked "queued" and a
+    //                           `queue.enqueue` event is emitted.
+    //    - admitted with drop → with `overflowStrategy: "drop_oldest"` the
+    //                           front-most request is evicted and failed with
+    //                           reason "queue_overflow".
+    //    - rejected           → the request fails with reason "queue_overflow"
+    //                           (a full queue) or "queue_disabled" (a queue
+    //                           that is explicitly disabled).
     if (!this.runtime.hasCapacity(event.sourceNodeId)) {
-      this.runtime.enqueueRequest(event.sourceNodeId, requestId);
+      const admission = this.runtime.enqueueRequest(
+        event.sourceNodeId,
+        requestId,
+      );
+
+      if (admission.admitted) {
+        this.runtime.updateRequest(requestId, {
+          status: "queued",
+          currentNodeId: event.sourceNodeId,
+        });
+
+        this.runtime.schedule(
+          createEvent({
+            simulationId: event.simulationId,
+            timestampMs: event.timestampMs,
+            type: "queue.enqueue",
+            sourceNodeId: event.sourceNodeId,
+            payload: {
+              requestId,
+            },
+          }),
+        );
+
+        if (admission.droppedRequestId) {
+          this.runtime.schedule(
+            createEvent({
+              simulationId: event.simulationId,
+              timestampMs: event.timestampMs,
+              type: "request.failed",
+              sourceNodeId: event.sourceNodeId,
+              payload: {
+                requestId: admission.droppedRequestId,
+                reason: "queue_overflow",
+              },
+            }),
+          );
+        }
+
+        return;
+      }
+
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "request.failed",
+          sourceNodeId: event.sourceNodeId,
+          payload: {
+            requestId,
+            reason:
+              admission.reason === "queue_full"
+                ? "queue_overflow"
+                : "queue_disabled",
+          },
+        }),
+      );
+
       return;
     }
 
@@ -132,6 +200,8 @@ export class RequestLifecycleHandlers {
     const currentAttempt = request.attempts + 1;
 
     this.runtime.updateRequest(requestId, {
+      status: "in-flight",
+      currentNodeId: event.sourceNodeId,
       attempts: currentAttempt,
     });
 
@@ -232,6 +302,9 @@ export class RequestLifecycleHandlers {
    * toward the next component. Routing is applied inline (rather than via
    * routeRequest) so the network latency of the outgoing connection is
    * accounted for, or the request is completed at a terminal component.
+   *
+   * Any queued requests are started again via a `queue.drain` event once the
+   * freed capacity is available.
    */
   handleProcessingCompleted(event: SimulationEvent): void {
     // Validates that the event carries a requestId.
@@ -274,24 +347,94 @@ export class RequestLifecycleHandlers {
       );
     }
 
-    const queuedRequestId = this.runtime.dequeueRequest(sourceNodeId);
-
-    if (queuedRequestId) {
+    // The freed capacity is offered to any queued requests. Draining is
+    // delegated to the `handleQueueDrain` handler via a `queue.drain` event
+    // (rather than done inline) so the drain observes the same simulation
+    // clock as every other transition. Skip the event when nothing is queued.
+    if (this.runtime.getQueuedRequestCount(sourceNodeId) > 0) {
       this.runtime.schedule(
         createEvent({
           simulationId: event.simulationId,
           timestampMs: event.timestampMs,
-          type: "request.processing_started",
-          sourceNodeId: sourceNodeId,
-          targetNodeId: sourceNodeId,
-          payload: {
-            requestId: queuedRequestId,
-          },
+          type: "queue.drain",
+          sourceNodeId,
         }),
       );
     }
 
     this.routeRequest(event, sourceNodeId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // queue.drain
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Starts the next queued requests once capacity becomes available again.
+   *
+   * Drains the component's FIFO queue while the component is healthy, emitting
+   * a `queue.dequeue` and a `request.processing_started` event for every
+   * request started. The drain is bounded by the capacity available at the
+   * time the event fires, so only requests that will actually start are
+   * dequeued.
+   */
+  handleQueueDrain(event: SimulationEvent): void {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
+      throw new Error("queue.drain event requires a sourceNodeId.");
+    }
+
+    const component = this.runtime.getComponent(nodeId);
+
+    // A failed component cannot process the queued requests.
+    if (component.health === "failed") {
+      return;
+    }
+
+    const availableSlots =
+      this.runtime.getEffectiveConcurrency(nodeId) -
+      this.runtime.getActiveRequestCount(nodeId);
+
+    let started = 0;
+
+    while (
+      started < availableSlots &&
+      this.runtime.getQueuedRequestCount(nodeId) > 0
+    ) {
+      const requestId = this.runtime.dequeueRequest(nodeId);
+
+      if (!requestId) {
+        break;
+      }
+
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "queue.dequeue",
+          sourceNodeId: nodeId,
+          payload: {
+            requestId,
+          },
+        }),
+      );
+
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "request.processing_started",
+          sourceNodeId: nodeId,
+          targetNodeId: nodeId,
+          payload: {
+            requestId,
+          },
+        }),
+      );
+
+      started += 1;
+    }
   }
 
   // ---------------------------------------------------------------------------

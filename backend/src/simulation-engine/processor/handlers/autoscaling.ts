@@ -10,6 +10,7 @@ import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../../core/simulation-runtime.js";
 import { AutoscalingController } from "../../autoscaling/autoscaling-controller.js";
 import { AutoscalingScheduler } from "../../autoscaling/autoscaling-scheduler.js";
+import { createEvent } from "../../utils/helpers.js";
 
 /** Handlers for the `autoscaling.evaluate` and `component.scaled` events. */
 export class AutoscalingHandlers {
@@ -99,6 +100,25 @@ export class AutoscalingHandlers {
       );
     }
 
+    const previousReplicas = component.replicas;
+
     this.runtime.setComponentReplicas(nodeId, replicas);
+
+    // A scale-up frees capacity for requests that are already queued, so offer
+    // it to them. Draining is handled by the request lifecycle's
+    // `handleQueueDrain`. Skip the event when nothing is queued.
+    if (
+      replicas > previousReplicas &&
+      this.runtime.getQueuedRequestCount(nodeId) > 0
+    ) {
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "queue.drain",
+          sourceNodeId: nodeId,
+        }),
+      );
+    }
   }
 }

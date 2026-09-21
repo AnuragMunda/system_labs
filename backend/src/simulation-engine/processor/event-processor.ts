@@ -67,6 +67,10 @@ export class DefaultEventProcessor implements EventProcessor {
         this.requestHandlers.handleRetry(event);
         break;
 
+      case "queue.drain":
+        this.requestHandlers.handleQueueDrain(event);
+        break;
+
       case "component.failed":
         this.componentHandlers.handleFailed(event);
         break;
