@@ -8,18 +8,11 @@
  */
 
 import { ComponentHealthThresholds } from "@/domain/simulation/health.type.js";
-import { ComponentRuntimeState } from "../component-runtime-state.js";
+import {
+  ComponentHealthMetrics,
+  ComponentRuntimeState,
+} from "../../utils/types.js";
 import { RuntimeComponentHealth } from "@/domain/architecture/component.types.js";
-
-/** The observables a component's health is derived from. */
-export interface ComponentHealthMetrics {
-  /** Fraction of effective concurrency currently in use (0-1). */
-  utilization: number;
-  /** Proportion of processing attempts that failed (0-1). */
-  errorRate: number;
-  /** Average processing latency in milliseconds. */
-  averageLatencyMs: number;
-}
 
 /**
  * Evaluates a component's health from its runtime counters. Severity per

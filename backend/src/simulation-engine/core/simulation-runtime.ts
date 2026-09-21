@@ -13,15 +13,22 @@ import { EventQueue } from "./event-queue.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
 import { ArchitectureTopology } from "../topology/architecture-topology.js";
-import { ComponentRuntimeState } from "../components/component-runtime-state.js";
-import type { RoutingStrategy } from "../routing/routing-strategy.js";
 import { SimulationRandom } from "../random/simulation-random.js";
-import { getEffectiveConcurrency } from "../helper.js";
 import { ComponentRequestQueue } from "../capacity/component-request-queue.js";
 import { createRoutingStrategy } from "../routing/routing-strategy.factory.js";
-import type { RoutingContext } from "../routing/routing-context.js";
 import { ComponentHealthEvaluator } from "../components/health/component-health-evaluator.js";
-import { DEFAULT_HEALTH_THRESHOLDS } from "../components/health/default-thresholds.js";
+import {
+  ComponentHealthStateChange,
+  ComponentRuntimeState,
+  RoutingContext,
+  RoutingStrategy,
+} from "../utils/types.js";
+import {
+  DEFAULT_CONCURRENCY,
+  DEFAULT_HEALTH_THRESHOLDS,
+  DEFAULT_REPLICAS,
+} from "../utils/constants.js";
+import { getEffectiveConcurrency } from "../utils/helpers.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -206,12 +213,9 @@ export class SimulationRuntime {
    * changed, or `undefined` when it did not (including explicitly failed
    * components, which are never mutated by automatic evaluation).
    */
-  evaluateComponentHealth(nodeId: string):
-    | {
-        previousHealth: ComponentRuntimeState["health"];
-        health: ComponentRuntimeState["health"];
-      }
-    | undefined {
+  evaluateComponentHealth(
+    nodeId: string,
+  ): ComponentHealthStateChange | undefined {
     const component = this.getComponent(nodeId);
 
     // Explicitly failed components remain failed until
@@ -308,7 +312,7 @@ export class SimulationRuntime {
       throw new Error(`Node not found: ${nodeId}`);
     }
 
-    const concurrency = node.config.concurrency ?? 1;
+    const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
 
     this.updateComponent(nodeId, {
       replicas,
@@ -381,8 +385,8 @@ export class SimulationRuntime {
    */
   private initializeComponents(): void {
     for (const node of this.simulation.architectureSnapshot.nodes) {
-      const replicas = node.config.replicas ?? 1;
-      const concurrency = node.config.concurrency ?? 1;
+      const replicas = node.config.replicas ?? DEFAULT_REPLICAS;
+      const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
 
       this.components.set(node.id, {
         nodeId: node.id,
@@ -456,7 +460,7 @@ export class SimulationRuntime {
     }
 
     const component = this.getComponent(nodeId);
-    const concurrency = node.config.concurrency ?? 1;
+    const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
 
     return getEffectiveConcurrency(component.replicas, concurrency);
   }

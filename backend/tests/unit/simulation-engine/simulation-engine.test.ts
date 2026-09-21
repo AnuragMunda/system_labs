@@ -1,7 +1,7 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
-import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
+import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
+import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
 import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
 import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
 import { RandomStrategy } from "@/simulation-engine/routing/random-strategy.js";

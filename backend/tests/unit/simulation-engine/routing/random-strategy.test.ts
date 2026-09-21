@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RandomStrategy } from "@/simulation-engine/routing/random-strategy.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { SimulationRandom } from "@/simulation-engine/random/simulation-random.js";
-import { RoutingContext } from "@/simulation-engine/routing/routing-context.js";
+import { RoutingContext } from "@/simulation-engine/utils/types.js";
 
 describe("RandomStrategy", () => {
   const edges: ArchitectureEdge[] = [

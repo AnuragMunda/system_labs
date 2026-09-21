@@ -1,5 +1,5 @@
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
-import { getNetworkLatency } from "@/simulation-engine/network/network-latency.js";
+import { getNetworkLatency } from "@/simulation-engine/utils/helpers.js";
 import { describe, expect, it } from "vitest";
 
 function createEdge(

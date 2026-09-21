@@ -1,7 +1,7 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
-import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
+import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
+import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
 import { AutoscalingController } from "@/simulation-engine/autoscaling/autoscaling-controller.js";
 import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";

@@ -2,7 +2,7 @@ import {
   canRetry,
   getEffectiveConcurrency,
   shouldFail,
-} from "@/simulation-engine/helper.js";
+} from "@/simulation-engine/utils/helpers.js";
 import { describe, expect, it } from "vitest";
 
 describe("shouldFail", () => {

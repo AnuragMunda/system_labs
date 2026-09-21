@@ -2,7 +2,7 @@ import { RoutingStrategyType } from "@/domain/architecture/component.types.js";
 import { LeastConnectionsStrategy } from "./least-connections-strategy.js";
 import { RandomStrategy } from "./random-strategy.js";
 import { RoundRobinStrategy } from "./round-robin-strategy.js";
-import type { RoutingStrategy } from "./routing-strategy.js";
+import type { RoutingStrategy } from "../utils/types.js";
 
 /** Maps a {@link RoutingStrategyType} string to its concrete implementation. */
 export function createRoutingStrategy(

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LeastConnectionsStrategy } from "@/simulation-engine/routing/least-connections-strategy.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { SimulationRandom } from "@/simulation-engine/random/simulation-random.js";
-import { RoutingContext } from "@/simulation-engine/routing/routing-context.js";
+import { RoutingContext } from "@/simulation-engine/utils/types.js";
 
 describe("LeastConnectionsStrategy", () => {
   const edges: ArchitectureEdge[] = [

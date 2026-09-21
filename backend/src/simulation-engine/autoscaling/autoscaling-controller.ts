@@ -8,9 +8,11 @@
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
-import { getEffectiveConcurrency } from "../helper.js";
-
-const AUTOSCALING_DEADBAND_PERCENT = 10;
+import { createEvent, getEffectiveConcurrency } from "../utils/helpers.js";
+import {
+  AUTOSCALING_DEADBAND_PERCENT,
+  DEFAULT_CONCURRENCY,
+} from "../utils/constants.js";
 
 export class AutoscalingController {
   constructor(private readonly runtime: SimulationRuntime) {}
@@ -83,7 +85,7 @@ export class AutoscalingController {
     // Scale-down must never reduce capacity below the number of currently
     // active requests. Defer the decision until enough capacity is free.
     if (nextReplicas < component.replicas) {
-      const concurrency = node.config.concurrency ?? 1;
+      const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
       const nextEffectiveConcurrency = getEffectiveConcurrency(
         nextReplicas,
         concurrency,
@@ -94,19 +96,20 @@ export class AutoscalingController {
       }
     }
 
-    this.runtime.schedule({
-      id: crypto.randomUUID(),
-      simulationId: event.simulationId,
-      timestampMs: event.timestampMs,
-      type: "component.scaled",
-      sourceNodeId: nodeId,
-      payload: {
-        previousReplicas: component.replicas,
-        replicas: nextReplicas,
-        utilization,
-        targetCpu: autoscaling.targetCpu,
-        reason: "cpu_target",
-      },
-    });
+    this.runtime.schedule(
+      createEvent({
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "component.scaled",
+        sourceNodeId: nodeId,
+        payload: {
+          previousReplicas: component.replicas,
+          replicas: nextReplicas,
+          utilization,
+          targetCpu: autoscaling.targetCpu,
+          reason: "cpu_target",
+        },
+      }),
+    );
   }
 }

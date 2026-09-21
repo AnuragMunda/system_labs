@@ -3,7 +3,8 @@
  */
 
 import { FailureSchedule } from "@/domain/simulation/simulation.types.js";
-import type { SimulationRuntime } from "./simulation-runtime.js";
+import type { SimulationRuntime } from "../core/simulation-runtime.js";
+import { createEvent } from "../utils/helpers.js";
 
 /**
  * Converts the failure schedule in a simulation's config into
@@ -26,13 +27,14 @@ export class FailureScheduler {
     for (const failure of failures) {
       this.validate(failure);
 
-      this.runtime.schedule({
-        id: crypto.randomUUID(),
-        simulationId: this.runtime.simulation.id,
-        timestampMs: failure.failedAtMs,
-        type: "component.failed",
-        sourceNodeId: failure.nodeId,
-      });
+      this.runtime.schedule(
+        createEvent({
+          simulationId: this.runtime.simulation.id,
+          timestampMs: failure.failedAtMs,
+          type: "component.failed",
+          sourceNodeId: failure.nodeId,
+        }),
+      );
     }
   }
 

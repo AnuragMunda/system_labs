@@ -1,6 +1,6 @@
 import { SimulationRuntime } from "../core/simulation-runtime.js";
-
-export const DEFAULT_AUTOSCALING_EVALUATION_INTERVAL_MS = 1000;
+import { DEFAULT_AUTOSCALING_EVALUATION_INTERVAL_MS } from "../utils/constants.js";
+import { createEvent } from "../utils/helpers.js";
 
 export class AutoscalingScheduler {
   constructor(
@@ -32,13 +32,14 @@ export class AutoscalingScheduler {
         continue;
       }
 
-      this.runtime.schedule({
-        id: crypto.randomUUID(),
-        simulationId: this.runtime.simulation.id,
-        timestampMs: this.evaluationIntervalMs,
-        type: "autoscaling.evaluate",
-        sourceNodeId: node.id,
-      });
+      this.runtime.schedule(
+        createEvent({
+          simulationId: this.runtime.simulation.id,
+          timestampMs: this.evaluationIntervalMs,
+          type: "autoscaling.evaluate",
+          sourceNodeId: node.id,
+        }),
+      );
     }
   }
 
@@ -54,12 +55,13 @@ export class AutoscalingScheduler {
       return;
     }
 
-    this.runtime.schedule({
-      id: crypto.randomUUID(),
-      simulationId: this.runtime.simulation.id,
-      timestampMs: nextTimestampMs,
-      type: "autoscaling.evaluate",
-      sourceNodeId: nodeId,
-    });
+    this.runtime.schedule(
+      createEvent({
+        simulationId: this.runtime.simulation.id,
+        timestampMs: nextTimestampMs,
+        type: "autoscaling.evaluate",
+        sourceNodeId: nodeId,
+      }),
+    );
   }
 }

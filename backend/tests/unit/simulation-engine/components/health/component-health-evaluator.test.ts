@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ComponentHealthEvaluator } from "@/simulation-engine/components/health/component-health-evaluator.js";
-import { DEFAULT_HEALTH_THRESHOLDS } from "@/simulation-engine/components/health/default-thresholds.js";
-import { ComponentRuntimeState } from "@/simulation-engine/components/component-runtime-state.js";
+import { DEFAULT_HEALTH_THRESHOLDS } from "@/simulation-engine/utils/constants.js";
+import { ComponentRuntimeState } from "@/simulation-engine/utils/types.js";
 
 function createState(
   overrides: Partial<ComponentRuntimeState> = {},

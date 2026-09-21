@@ -8,10 +8,10 @@
  */
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
-import { EventProcessor } from "../types.js";
+import { EventProcessor } from "../utils/types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
-import { TrafficGenerator } from "./traffic-generator.js";
-import { FailureScheduler } from "./failure-scheduler.js";
+import { TrafficGenerator } from "../initializers/traffic-generator.js";
+import { FailureScheduler } from "../initializers/failure-scheduler.js";
 import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
 
 /**

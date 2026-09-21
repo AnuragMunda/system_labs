@@ -82,7 +82,6 @@ Use additional files only when complexity requires them.
 Read in this exact order before any implementation:
 
 1. src/modules/ARCHITECTURE.md
-2. backend/PROGRESS.md
 
 ## Development Rule
 

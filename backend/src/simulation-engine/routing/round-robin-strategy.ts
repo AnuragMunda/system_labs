@@ -6,8 +6,7 @@
  */
 
 import type { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
-import type { RoutingContext } from "./routing-context.js";
-import type { RoutingStrategy } from "./routing-strategy.js";
+import type { RoutingContext, RoutingStrategy } from "../utils/types.js";
 
 export class RoundRobinStrategy implements RoutingStrategy {
   // Tracks the next edge position per source node, so multiple sources keep

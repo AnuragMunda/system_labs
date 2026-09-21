@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { TrafficGenerator } from "@/simulation-engine/core/traffic-generator.js";
-import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
+import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
+import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
 import { DefaultEventProcessor } from "@/simulation-engine/processor/event-processor.js";
 import { AutoscalingController } from "@/simulation-engine/autoscaling/autoscaling-controller.js";
 import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
-import type { EventProcessor } from "@/simulation-engine/types.js";
+import type { EventProcessor } from "@/simulation-engine/utils/types.js";
 import type { Simulation } from "@/domain/simulation/simulation.types.js";
 import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import type { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";

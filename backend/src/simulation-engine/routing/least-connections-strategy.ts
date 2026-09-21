@@ -1,6 +1,5 @@
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
-import type { RoutingContext } from "./routing-context.js";
-import type { RoutingStrategy } from "./routing-strategy.js";
+import type { RoutingContext, RoutingStrategy } from "../utils/types.js";
 
 /**
  * Routes to the downstream node with the lowest active request count at

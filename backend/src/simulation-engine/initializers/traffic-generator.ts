@@ -8,7 +8,9 @@
  */
 
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
-import { SimulationRuntime } from "./simulation-runtime.js";
+import { SimulationRuntime } from "../core/simulation-runtime.js";
+import { createEvent } from "../utils/helpers.js";
+import { MILLISECONDS_PER_SECOND } from "../utils/constants.js";
 
 /**
  * Produces the starting traffic of a simulation. It reads the rate and
@@ -38,7 +40,7 @@ export class TrafficGenerator {
       return; // No traffic to generate
     }
 
-    const intervalMs = 1000 / requestsPerSecond;
+    const intervalMs = MILLISECONDS_PER_SECOND / requestsPerSecond;
 
     let timestampMs = 0;
     let sequence = 0;
@@ -56,14 +58,16 @@ export class TrafficGenerator {
 
       this.runtime.createRequest(request);
 
-      this.runtime.schedule({
-        id: this.createEventId(sequence),
-        simulationId: this.runtime.simulation.id,
-        timestampMs: eventTimestampMs,
-        type: "request.created",
-        sourceNodeId,
-        payload: { requestId },
-      });
+      this.runtime.schedule(
+        createEvent({
+          id: this.createEventId(sequence),
+          simulationId: this.runtime.simulation.id,
+          timestampMs: eventTimestampMs,
+          type: "request.created",
+          sourceNodeId,
+          payload: { requestId },
+        }),
+      );
 
       timestampMs += intervalMs;
       sequence++;

@@ -1,9 +1,17 @@
 /**
- * @file helper.ts
+ * @file helpers.ts
  *
- * @description Pure helper functions consumed by the simulation engine's event
- * processor and component logic.
+ * @description Pure helper functions shared across the simulation engine: error
+ * rate checks, retry policy, concurrency math, network latency resolution, and
+ * event construction.
  */
+
+import { randomUUID } from "node:crypto";
+
+import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
+import { SimulationEvent } from "@/domain/simulation/event.types.js";
+
+import { DEFAULT_NETWORK_LATENCY_MS } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Error Rate
@@ -51,8 +59,6 @@ export function shouldFail(errorRate: number, randomValue: number): boolean {
 // ---------------------------------------------------------------------------
 // Retry Policy
 // ---------------------------------------------------------------------------
-
-export const DEFAULT_RETRY_DELAY_MS = 10;
 
 /**
  * Determines whether a retry is allowed given the current attempt number and
@@ -105,4 +111,55 @@ export function getEffectiveConcurrency(
   }
 
   return replicas * concurrency;
+}
+
+// ---------------------------------------------------------------------------
+// Network Latency
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the network latency of a single architecture connection (edge). The
+ * value is read from the edge's configuration and validated before being
+ * applied during event routing.
+ */
+export function getNetworkLatency(edge: ArchitectureEdge): number {
+  const latencyMs = edge.config.latencyMs;
+
+  // Default latency is used for connections without an explicit value.
+  if (latencyMs === undefined) {
+    return DEFAULT_NETWORK_LATENCY_MS;
+  }
+
+  // A negative latency would move a request backwards in time.
+  if (latencyMs < 0) {
+    throw new Error(
+      `Connection ${edge.id} has an invalid latency: ${latencyMs}ms.`,
+    );
+  }
+
+  return latencyMs;
+}
+
+// ---------------------------------------------------------------------------
+// Event Construction
+// ---------------------------------------------------------------------------
+
+/** Produces a unique event id. */
+export function newEventId(): string {
+  return randomUUID();
+}
+
+/** Input for {@link createEvent} with an optional explicit id. */
+export type CreateEventInput = Omit<SimulationEvent, "id"> & { id?: string };
+
+/**
+ * Builds a simulation event, generating a unique id when one is not supplied.
+ * An explicit `id` can be passed for deterministic event ids (for example
+ * pre-generated request load).
+ */
+export function createEvent(input: CreateEventInput): SimulationEvent {
+  return {
+    ...input,
+    id: input.id ?? newEventId(),
+  };
 }

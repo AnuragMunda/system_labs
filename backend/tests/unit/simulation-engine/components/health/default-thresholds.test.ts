@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HEALTH_THRESHOLDS } from "@/simulation-engine/components/health/default-thresholds.js";
+import { DEFAULT_HEALTH_THRESHOLDS } from "@/simulation-engine/utils/constants.js";
 
 describe("DEFAULT_HEALTH_THRESHOLDS", () => {
   it.each(["utilization", "errorRate", "latencyMs"] as const)(

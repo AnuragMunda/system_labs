@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { SimulationRandom } from "@/simulation-engine/random/simulation-random.js";
-import { RoutingContext } from "@/simulation-engine/routing/routing-context.js";
+import { RoutingContext } from "@/simulation-engine/utils/types.js";
 
 describe("RoundRobinStrategy", () => {
   const edges: ArchitectureEdge[] = [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FailureScheduler } from "@/simulation-engine/core/failure-scheduler.js";
+import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import {
   FailureSchedule,
