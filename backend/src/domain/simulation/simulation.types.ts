@@ -53,6 +53,17 @@ export interface SimulationConfig {
   // Emit simulation events for replay and visualization.
   emitEvents: boolean;
 
+  /**
+   * Stable resource keys requests cycle through deterministically when a
+   * simulation includes a cache component (e.g. `["GET:/users/123",
+   * "GET:/products/42"]`). Keys are assigned round-robin by arrival slot, so
+   * multiple requests share a key and the cache can produce real hits.
+   *
+   * When omitted, requests receive a unique synthetic key
+   * (`GET:/resource/${sequence}`), which never produces a hit.
+   */
+  cacheKeys?: string[];
+
   // Scheduled component failures and recoveries applied during the run.
   failures?: FailureSchedule[];
 }

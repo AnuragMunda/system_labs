@@ -17,6 +17,10 @@ export interface EventProcessor {
   process(event: SimulationEvent): void;
 }
 
+// ---------------------------------------------------------------------------
+// ROUTING
+// ---------------------------------------------------------------------------
+
 /**
  * The contract for choosing which of a node's outgoing edges a request should
  * travel across next. Implementations may hold per-source-node state (for
@@ -40,6 +44,10 @@ export interface RoutingContext {
   /** The simulation's deterministic PRNG instance. */
   random: SimulationRandom;
 }
+
+// ---------------------------------------------------------------------------
+// COMPONENT RUNTIME
+// ---------------------------------------------------------------------------
 
 /** The mutable runtime state the engine maintains for one component. */
 export interface ComponentRuntimeState {
@@ -77,6 +85,10 @@ export interface ComponentHealthStateChange {
   health: RuntimeComponentHealth;
 }
 
+// ---------------------------------------------------------------------------
+// QUEUE
+// ---------------------------------------------------------------------------
+
 /**
  * The result of a queue admission attempt (see
  * {@link SimulationRuntime.enqueueRequest}).
@@ -90,3 +102,33 @@ export type QueueAdmissionResult =
       admitted: false;
       reason: "queue_full" | "queue_disabled";
     };
+
+// ---------------------------------------------------------------------------
+// CACHE
+// ---------------------------------------------------------------------------
+
+/** A single entry stored in a component's cache. */
+export interface CacheEntry {
+  /** The stable resource key the entry is stored under. */
+  key: string;
+  /** The cached "backend response". */
+  value: unknown;
+  /** Simulation time at which the entry was populated. */
+  createdAtMs: number;
+  /** Simulation time at which the entry expires; `Infinity` when it never
+   * expires (`ttlMs === 0`). */
+  expiresAtMs: number;
+  /** Simulation time the entry was last read; drives LRU eviction. */
+  lastAccessedAtMs: number;
+}
+
+/** The mutable runtime state one component's cache maintains. */
+export interface CacheState {
+  entries: Map<string, CacheEntry>;
+  /** Total number of successful lookups (cache metrics, not processing metrics). */
+  hits: number;
+  /** Total number of lookup misses (cache metrics, not processing metrics). */
+  misses: number;
+  /** Total number of LRU evictions performed. */
+  evictions: number;
+}

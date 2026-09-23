@@ -17,11 +17,13 @@ import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
 import { RequestLifecycleHandlers } from "./handlers/request-lifecycle.js";
 import { ComponentLifecycleHandlers } from "./handlers/component-lifecycle.js";
 import { AutoscalingHandlers } from "./handlers/autoscaling.js";
+import { CacheHandlers } from "./handlers/cache-handling.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   private readonly requestHandlers: RequestLifecycleHandlers;
   private readonly componentHandlers: ComponentLifecycleHandlers;
   private readonly autoscalingHandlers: AutoscalingHandlers;
+  private readonly cacheHandlers: CacheHandlers;
 
   constructor(
     runtime: SimulationRuntime,
@@ -35,6 +37,7 @@ export class DefaultEventProcessor implements EventProcessor {
       autoscalingController,
       autoscalingScheduler,
     );
+    this.cacheHandlers = new CacheHandlers(runtime);
   }
 
   process(event: SimulationEvent): void {
@@ -97,6 +100,18 @@ export class DefaultEventProcessor implements EventProcessor {
 
       case "component.scaled":
         this.autoscalingHandlers.handleScaled(event);
+        break;
+
+      case "cache.hit":
+        this.cacheHandlers.handleCacheHit(event);
+        break;
+
+      case "cache.miss":
+        this.cacheHandlers.handleCacheMiss(event);
+        break;
+
+      case "cache.set":
+        this.cacheHandlers.handleCacheSet(event);
         break;
 
       default:

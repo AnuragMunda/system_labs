@@ -104,6 +104,7 @@ export interface ComponentConfig {
    * If omitted, the component does not automatically recover.
    */
   recoveryDelayMs?: number;
+  cache?: CacheConfig;
 }
 
 export type RuntimeComponentHealth =
@@ -121,4 +122,11 @@ export interface ComponentQueueConfig {
   maxSize?: number;
   /** Strategy applied when the queue is full. Defaults to `"reject"`. */
   overflowStrategy?: QueueOverflowStrategy;
+}
+
+export interface CacheConfig {
+  ttlMs: number;
+  capacity: number;
+  hitLatencyMs?: number;
+  missLatencyMs?: number;
 }

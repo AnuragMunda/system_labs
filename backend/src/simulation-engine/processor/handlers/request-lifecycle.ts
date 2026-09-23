@@ -67,6 +67,11 @@ export class RequestLifecycleHandlers {
       currentNodeId: event.targetNodeId,
     });
 
+    if (this.runtime.isCacheNode(event.targetNodeId)) {
+      this.handleCacheLookup(event, event.targetNodeId, requestId);
+      return;
+    }
+
     this.runtime.schedule(
       createEvent({
         simulationId: event.simulationId,
@@ -277,6 +282,11 @@ export class RequestLifecycleHandlers {
 
     const latencyMs = node.config.latencyMs ?? 0;
 
+    // The miss context lives on the request (set on cache.miss), so it
+    // survives retries and queue admission; forward it as observability on
+    // the completion event too.
+    const cacheMiss = request.cacheMiss === true;
+
     // 8. Schedule processing_completed; the start timestamp lets the completion
     // handler compute the request's actual processing latency.
     this.runtime.schedule(
@@ -288,6 +298,7 @@ export class RequestLifecycleHandlers {
         payload: {
           requestId,
           processingStartedAtMs: event.timestampMs,
+          cacheMiss,
         },
       }),
     );
@@ -303,12 +314,16 @@ export class RequestLifecycleHandlers {
    * routeRequest) so the network latency of the outgoing connection is
    * accounted for, or the request is completed at a terminal component.
    *
+   * A request that missed a cache lookup runs the same bookkeeping as any
+   * other processing (latency, capacity, health, queue drain) before it stores
+   * the fetched value via `cache.set` and completes at the cache.
+   *
    * Any queued requests are started again via a `queue.drain` event once the
    * freed capacity is available.
    */
   handleProcessingCompleted(event: SimulationEvent): void {
     // Validates that the event carries a requestId.
-    getRequestId(event);
+    const requestId = getRequestId(event);
 
     // The start timestamp is required to derive the real processing latency.
     const processingStartedAtMs = event.payload?.processingStartedAtMs;
@@ -360,6 +375,31 @@ export class RequestLifecycleHandlers {
           sourceNodeId,
         }),
       );
+    }
+
+    // A completed cache miss stores the fetched value and completes at the
+    // cache instead of routing onward. The miss context is read from the
+    // request so it stays correct even when processing started via a retry or
+    // a queue drain.
+    const request = this.runtime.getRequest(requestId);
+
+    if (request.cacheMiss === true && this.runtime.isCacheNode(sourceNodeId)) {
+      this.scheduleCacheSet(event, sourceNodeId);
+
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "request.completed",
+          sourceNodeId,
+          payload: {
+            requestId,
+            cacheMiss: true,
+          },
+        }),
+      );
+
+      return;
     }
 
     this.routeRequest(event, sourceNodeId);
@@ -575,6 +615,120 @@ export class RequestLifecycleHandlers {
         targetNodeId: selectedEdge.target,
         payload: {
           requestId,
+        },
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cache Helpers
+  // ---------------------------------------------------------------------------
+
+  private handleCacheLookup(
+    event: SimulationEvent,
+    nodeId: string,
+    requestId: string,
+  ): void {
+    // A failed cache can serve neither path. Closing the window where the
+    // node fails after `request.routed` but before this lookup runs.
+    const component = this.runtime.getComponent(nodeId);
+
+    if (component.health === "failed") {
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "request.failed",
+          sourceNodeId: nodeId,
+          payload: {
+            requestId,
+            reason: "component_failed",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    const cacheKey = this.runtime.getRequest(requestId).cacheKey;
+
+    if (typeof cacheKey !== "string") {
+      throw new Error(
+        `Request ${requestId} reached cache ${nodeId} without a cacheKey.`,
+      );
+    }
+
+    const entry = this.runtime.getCacheEntry(nodeId, cacheKey);
+
+    const node = this.runtime.topology.getNode(nodeId);
+
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    const hitLatencyMs =
+      node.config.cache?.hitLatencyMs ?? node.config.latencyMs ?? 0;
+
+    const missLatencyMs =
+      node.config.cache?.missLatencyMs ?? node.config.latencyMs ?? 0;
+
+    if (entry) {
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs + hitLatencyMs,
+          type: "cache.hit",
+          sourceNodeId: nodeId,
+          targetNodeId: nodeId,
+          payload: {
+            requestId,
+            cacheKey,
+          },
+        }),
+      );
+
+      return;
+    }
+
+    this.runtime.schedule(
+      createEvent({
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs + missLatencyMs,
+        type: "cache.miss",
+        sourceNodeId: nodeId,
+        targetNodeId: nodeId,
+        payload: {
+          requestId,
+          cacheKey,
+        },
+      }),
+    );
+  }
+
+  private scheduleCacheSet(event: SimulationEvent, nodeId: string): void {
+    const requestId = getRequestId(event);
+
+    const cacheKey = this.runtime.getRequest(requestId).cacheKey;
+
+    if (typeof cacheKey !== "string") {
+      throw new Error(
+        `Request ${requestId} missed cache ${nodeId} without a cacheKey.`,
+      );
+    }
+
+    this.runtime.schedule(
+      createEvent({
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "cache.set",
+        sourceNodeId: nodeId,
+        targetNodeId: nodeId,
+        payload: {
+          requestId,
+          cacheKey,
+          value: {
+            requestId,
+          },
         },
       }),
     );

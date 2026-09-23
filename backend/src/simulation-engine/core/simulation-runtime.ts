@@ -30,6 +30,7 @@ import {
   DEFAULT_REPLICAS,
 } from "../utils/constants.js";
 import { getEffectiveConcurrency } from "../utils/helpers.js";
+import { SimulationCache } from "../cache/simulation-cache.js";
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -50,6 +51,7 @@ export class SimulationRuntime {
   private readonly requests = new Map<string, SimulationRequest>();
   private readonly components = new Map<string, ComponentRuntimeState>();
   private readonly routingStrategies = new Map<string, RoutingStrategy>();
+  private readonly caches = new Map<string, SimulationCache>();
 
   constructor(simulation: Simulation) {
     this.simulation = simulation;
@@ -59,6 +61,7 @@ export class SimulationRuntime {
 
     this.initializeComponents();
     this.initializeRoutingStrategies();
+    this.initializeCaches();
   }
 
   /** Queues an event for future processing by the engine. */
@@ -439,6 +442,48 @@ export class SimulationRuntime {
   }
 
   // ---------------------------------------------------------------------------
+  // CACHE
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the cache associated with a cache node.
+   */
+  getCache(nodeId: string): SimulationCache {
+    const cache = this.caches.get(nodeId);
+
+    if (!cache) {
+      throw new Error(`Cache not configured for node: ${nodeId}`);
+    }
+
+    return cache;
+  }
+
+  /**
+   * Returns true when the node is configured as a cache and has
+   * runtime cache state.
+   */
+  isCacheNode(nodeId: string): boolean {
+    return this.caches.has(nodeId);
+  }
+
+  /**
+   * Looks up a cache entry using the current simulation time.
+   */
+  getCacheEntry(
+    nodeId: string,
+    key: string,
+  ): ReturnType<SimulationCache["get"]> {
+    return this.getCache(nodeId).get(key, this.currentTimeMs);
+  }
+
+  /**
+   * Stores a value in a component's cache.
+   */
+  setCacheEntry(nodeId: string, key: string, value: unknown): void {
+    this.getCache(nodeId).set(key, value, this.currentTimeMs);
+  }
+
+  // ---------------------------------------------------------------------------
   // LIFECYCLE
   // ---------------------------------------------------------------------------
 
@@ -488,6 +533,27 @@ export class SimulationRuntime {
     }
   }
 
+  private initializeCaches(): void {
+    this.caches.clear();
+
+    for (const node of this.simulation.architectureSnapshot.nodes) {
+      if (node.type !== "cache") {
+        continue;
+      }
+
+      const config = node.config.cache;
+
+      if (!config) {
+        continue;
+      }
+
+      this.caches.set(
+        node.id,
+        new SimulationCache(config.capacity, config.ttlMs),
+      );
+    }
+  }
+
   /** Resets the simulation runtime to its initial state. */
   reset(): void {
     this.clock.reset();
@@ -500,6 +566,7 @@ export class SimulationRuntime {
 
     this.initializeComponents();
     this.initializeRoutingStrategies();
+    this.initializeCaches();
   }
 
   // ---------------------------------------------------------------------------

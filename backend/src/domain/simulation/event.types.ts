@@ -17,6 +17,7 @@ export type SimulationEventType =
   | "request.retry"
   | "cache.hit"
   | "cache.miss"
+  | "cache.set"
   | "database.request"
   | "queue.enqueue"
   | "queue.dequeue"

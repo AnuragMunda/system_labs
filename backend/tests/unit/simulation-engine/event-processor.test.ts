@@ -3338,3 +3338,703 @@ describe("request queueing", () => {
     expect(runtime.getQueuedRequestCount("api")).toBe(0);
   });
 });
+
+describe("cache flow", () => {
+  function cacheGraph(
+    config: ArchitectureNode["config"] = {},
+  ): ArchitectureGraph {
+    return {
+      nodes: [
+        node("client", "client"),
+        node("cache", "cache", {
+          cache: { ttlMs: 1000, capacity: 4 },
+          replicas: 1,
+          concurrency: 1,
+          latencyMs: 0,
+          // Stay healthy throughout so cache tests observe the cache paths
+          // without health-transition events interleaving with the requests.
+          healthThresholds: {
+            utilization: { degraded: 2, critical: 3 },
+            errorRate: { degraded: 2, critical: 3 },
+            latencyMs: { degraded: 1_000_000, critical: 2_000_000 },
+          },
+          ...config,
+        }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "cache", config: {} }],
+    };
+  }
+
+  function createCacheRequest(
+    runtime: SimulationRuntime,
+    requestId: string,
+    cacheKey: string,
+  ): void {
+    runtime.createRequest({
+      id: requestId,
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+      cacheKey,
+    });
+  }
+
+  function routeToCache(
+    processor: DefaultEventProcessor,
+    requestId: string,
+    timestampMs = 10,
+  ): void {
+    processor.process(
+      createEvent("request.routed", timestampMs, requestId, "client", "cache"),
+    );
+  }
+
+  function seedCacheEntry(
+    runtime: SimulationRuntime,
+    cacheKey = "GET:/users/123",
+  ): void {
+    runtime.setCacheEntry("cache", cacheKey, { requestId: "seed" });
+  }
+
+  it("should miss when no entry matches the request's stable cache key", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1");
+
+    const miss = dequeueEventOfType(runtime, "cache.miss");
+
+    expect(miss).toBeDefined();
+    expect(miss?.sourceNodeId).toBe("cache");
+    expect(miss?.targetNodeId).toBe("cache");
+    expect(miss?.timestampMs).toBe(10);
+    expect(miss?.payload?.requestId).toBe("req-1");
+    expect(miss?.payload?.cacheKey).toBe("GET:/users/123");
+
+    // The lookup itself counted the miss.
+    expect(runtime.getCache("cache").misses).toBe(1);
+    expect(runtime.getCache("cache").hits).toBe(0);
+
+    processor.process(miss!);
+
+    expect(runtime.getRequest("req-1").cacheMiss).toBe(true);
+  });
+
+  it("should store the fetched value under the stable key after a successful miss", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1");
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    )!;
+    processor.process(completed);
+
+    const set = dequeueEventOfType(runtime, "cache.set");
+    expect(set).toBeDefined();
+    expect(set?.payload?.cacheKey).toBe("GET:/users/123");
+    expect(set?.payload?.value).toEqual({ requestId: "req-1" });
+    processor.process(set!);
+
+    const done = dequeueEventOfType(runtime, "request.completed")!;
+    processor.process(done);
+
+    const entry = runtime.getCacheEntry("cache", "GET:/users/123");
+
+    expect(entry?.key).toBe("GET:/users/123");
+    expect(entry?.value).toEqual({ requestId: "req-1" });
+    expect(runtime.getCache("cache").size).toBe(1);
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+  });
+
+  it("should hit on a subsequent request that shares the stored cache key", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const hit = dequeueEventOfType(runtime, "cache.hit");
+
+    expect(hit).toBeDefined();
+    expect(hit?.payload?.cacheKey).toBe("GET:/users/123");
+    processor.process(hit!);
+
+    const done = dequeueEventOfType(runtime, "request.completed")!;
+    processor.process(done);
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+    expect(runtime.getRequest("req-1").cacheMiss).toBeUndefined();
+    expect(runtime.getCache("cache").hits).toBe(1);
+    expect(runtime.getCache("cache").misses).toBe(0);
+  });
+
+  it("should keep entries for different cache keys isolated", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    for (const [index, key] of [
+      "GET:/users/123",
+      "GET:/orders/456",
+    ].entries()) {
+      const requestId = `req-${index}`;
+
+      createCacheRequest(runtime, requestId, key);
+      routeToCache(processor, requestId, 10 + index * 10);
+
+      const miss = dequeueEventOfType(runtime, "cache.miss");
+      expect(miss).toBeDefined();
+      expect(miss?.payload?.cacheKey).toBe(key);
+      processor.process(miss!);
+
+      const started = dequeueEventOfType(
+        runtime,
+        "request.processing_started",
+      )!;
+      processor.process(started);
+      const completed = dequeueEventOfType(
+        runtime,
+        "request.processing_completed",
+      )!;
+      processor.process(completed);
+      const set = dequeueEventOfType(runtime, "cache.set")!;
+      processor.process(set);
+      const done = dequeueEventOfType(runtime, "request.completed")!;
+      processor.process(done);
+    }
+
+    expect(runtime.getCache("cache").size).toBe(2);
+    expect(runtime.getCacheEntry("cache", "GET:/users/123")?.value).toEqual({
+      requestId: "req-0",
+    });
+    expect(runtime.getCacheEntry("cache", "GET:/orders/456")?.value).toEqual({
+      requestId: "req-1",
+    });
+    expect(runtime.getCache("cache").misses).toBe(2);
+  });
+
+  it("should complete a hit without entering normal processing", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const hit = dequeueEventOfType(runtime, "cache.hit")!;
+    processor.process(hit);
+
+    // A hit only schedules the completion, never a processing pass.
+    const scheduled: SimulationEvent[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      scheduled.push(runtime.eventQueue.dequeue()!);
+    }
+
+    expect(scheduled.map((event) => event.type)).toEqual(["request.completed"]);
+
+    for (const event of scheduled) processor.process(event);
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+  });
+
+  it("should not consume processing capacity on a hit", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const hit = dequeueEventOfType(runtime, "cache.hit")!;
+    processor.process(hit);
+
+    const done = dequeueEventOfType(runtime, "request.completed")!;
+    processor.process(done);
+
+    expect(runtime.getComponent("cache").activeRequests).toBe(0);
+    expect(runtime.getActiveRequestCount("cache")).toBe(0);
+  });
+
+  it("should not touch processing-attempt or latency counters on a hit", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const hit = dequeueEventOfType(runtime, "cache.hit")!;
+    processor.process(hit);
+    const done = dequeueEventOfType(runtime, "request.completed")!;
+    processor.process(done);
+
+    const component = runtime.getComponent("cache");
+
+    expect(component.processedRequests).toBe(0);
+    expect(component.totalProcessingAttempts).toBe(0);
+    expect(component.failedProcessingAttempts).toBe(0);
+    expect(component.totalProcessingLatencyMs).toBe(0);
+    expect(component.lastProcessingLatencyMs).toBeUndefined();
+  });
+
+  it("should consume processing capacity while a miss is being processed", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+
+    expect(runtime.getActiveRequestCount("cache")).toBe(1);
+  });
+
+  it("should count a miss as a normal processing attempt", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+
+    expect(runtime.getComponent("cache").totalProcessingAttempts).toBe(1);
+  });
+
+  it("should record processing latency and free capacity when a miss completes", () => {
+    const graph = cacheGraph({
+      latencyMs: 20,
+      cache: { ttlMs: 1000, capacity: 4, hitLatencyMs: 0, missLatencyMs: 0 },
+    });
+    const { runtime, processor } = createRuntime(graph);
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+
+    expect(runtime.getActiveRequestCount("cache")).toBe(1);
+
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
+
+    expect(completed?.timestampMs).toBe(30);
+    processor.process(completed!);
+
+    const component = runtime.getComponent("cache");
+
+    expect(component.totalProcessingLatencyMs).toBe(20);
+    expect(component.lastProcessingLatencyMs).toBe(20);
+    expect(component.processedRequests).toBe(1);
+    expect(component.activeRequests).toBe(0);
+  });
+
+  it("should evaluate component health when a miss completes", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const spy = vi.spyOn(runtime, "evaluateComponentHealth");
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    )!;
+    processor.process(completed);
+
+    expect(spy).toHaveBeenCalled();
+
+    spy.mockRestore();
+  });
+
+  it("should store the cache entry before completing a miss", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    )!;
+    processor.process(completed);
+
+    const types: string[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+      types.push(event.type);
+
+      if (event.type === "cache.set") {
+        processor.process(event);
+      }
+    }
+
+    expect(types).toContain("cache.set");
+    expect(types).toContain("request.completed");
+    expect(types.indexOf("cache.set")).toBeLessThan(
+      types.indexOf("request.completed"),
+    );
+
+    // The entry is populated while the request still awaits completion.
+    expect(runtime.getCacheEntry("cache", "GET:/users/123")?.value).toEqual({
+      requestId: "req-1",
+    });
+    expect(runtime.getRequest("req-1").status).toBe("in-flight");
+  });
+
+  it("should drain the next queued request when a miss completes at saturation", () => {
+    // Processing latency pushes A's completion past B's admission so the
+    // events can be observed in a stable order.
+    const graph = cacheGraph({
+      latencyMs: 30,
+      cache: { ttlMs: 1000, capacity: 4, hitLatencyMs: 0, missLatencyMs: 0 },
+    });
+    const { runtime, processor } = createRuntime(graph);
+
+    createCacheRequest(runtime, "A", "GET:/a");
+    createCacheRequest(runtime, "B", "GET:/b");
+
+    // A enters processing and holds the only slot.
+    routeToCache(processor, "A", 10);
+    const missA = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(missA);
+    const startA = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(startA);
+
+    // B misses and is queued while A is still in-flight.
+    routeToCache(processor, "B", 10);
+    const missB = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(missB);
+    const startB = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(startB);
+
+    expect(runtime.getQueuedRequestCount("cache")).toBe(1);
+    expect(runtime.getRequest("B").status).toBe("queued");
+    expect(runtime.getRequest("B").cacheMiss).toBe(true);
+
+    // Completing A frees the slot; the freed capacity drains B.
+    const completeA = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
+    expect(completeA?.payload?.requestId).toBe("A");
+    processor.process(completeA!);
+
+    const transcript: { type: string; requestId?: string }[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue();
+
+      if (!event) {
+        break;
+      }
+
+      transcript.push({
+        type: event.type,
+        requestId: (event.payload as { requestId?: string } | undefined)
+          ?.requestId,
+      });
+
+      processor.process(event);
+    }
+
+    // The drain ran and admitted the queued request B as a normal start.
+    expect(transcript).toContainEqual({ type: "queue.drain" });
+    expect(transcript).toContainEqual({
+      type: "request.processing_started",
+      requestId: "B",
+    });
+    expect(transcript.map((event) => event.type)).toContain("queue.dequeue");
+
+    // Everything resolved: both entries stored, both requests completed, and
+    // the queue is empty.
+    expect(runtime.getCache("cache").size).toBe(2);
+    expect(runtime.getCacheEntry("cache", "GET:/a")?.value).toEqual({
+      requestId: "A",
+    });
+    expect(runtime.getCacheEntry("cache", "GET:/b")?.value).toEqual({
+      requestId: "B",
+    });
+    expect(runtime.getRequest("A").status).toBe("completed");
+    expect(runtime.getRequest("B").status).toBe("completed");
+    expect(runtime.getQueuedRequestCount("cache")).toBe(0);
+  });
+
+  it("should keep cacheMiss true when a queued miss is admitted later", () => {
+    const graph = cacheGraph({
+      latencyMs: 30,
+      cache: { ttlMs: 1000, capacity: 4, hitLatencyMs: 0, missLatencyMs: 0 },
+    });
+    const { runtime, processor } = createRuntime(graph);
+
+    createCacheRequest(runtime, "A", "GET:/a");
+    createCacheRequest(runtime, "B", "GET:/b");
+
+    routeToCache(processor, "A", 10);
+    processor.process(dequeueEventOfType(runtime, "cache.miss")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    routeToCache(processor, "B", 10);
+    processor.process(dequeueEventOfType(runtime, "cache.miss")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    // B is queued with the miss context intact.
+    expect(runtime.getRequest("B").cacheMiss).toBe(true);
+    expect(runtime.getQueuedRequestCount("cache")).toBe(1);
+    expect(runtime.getRequest("B").status).toBe("queued");
+
+    // Completing A drains the queue and admits B.
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_completed")!,
+    );
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue();
+
+      if (!event) {
+        break;
+      }
+
+      processor.process(event);
+    }
+
+    // The miss context survived queue admission; completing the drained miss
+    // stored its entry.
+    expect(runtime.getRequest("B").cacheMiss).toBe(true);
+    expect(runtime.getRequest("B").status).toBe("completed");
+    expect(runtime.getCacheEntry("cache", "GET:/b")?.value).toEqual({
+      requestId: "B",
+    });
+  });
+
+  it("should not store an entry when a miss processing attempt fails", () => {
+    const graph = cacheGraph({ errorRate: 1 });
+    const { runtime, processor } = createRuntime(graph);
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+    const started = dequeueEventOfType(runtime, "request.processing_started")!;
+    processor.process(started);
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed).toBeDefined();
+    expect(failed?.payload?.reason).toBe("component_error");
+    processor.process(failed!);
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(dequeueEventOfType(runtime, "cache.set")).toBeUndefined();
+    expect(runtime.getCache("cache").size).toBe(0);
+  });
+
+  it("should respect the component error rate and retry policy on a miss", () => {
+    const graph = cacheGraph({
+      errorRate: 1,
+      retryPolicy: { retries: 2, circuitBreaker: false },
+    });
+    const { runtime, processor } = createRuntime(graph);
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const miss = dequeueEventOfType(runtime, "cache.miss")!;
+    processor.process(miss);
+
+    const retryEvents: number[] = [];
+    let terminal: SimulationEvent | undefined;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const started = dequeueEventOfType(runtime, "request.processing_started");
+
+      expect(started).toBeDefined();
+      processor.process(started!);
+
+      // The miss context survives every retried attempt.
+      expect(runtime.getRequest("req-1").cacheMiss).toBe(true);
+      expect(runtime.getRequest("req-1").attempts).toBe(attempt);
+
+      const outcome = runtime.eventQueue.dequeue();
+
+      if (attempt < 3) {
+        expect(outcome?.type).toBe("request.retry");
+        retryEvents.push(outcome!.timestampMs);
+        processor.process(outcome!);
+      } else {
+        terminal = outcome;
+      }
+    }
+
+    expect(retryEvents).toHaveLength(2);
+    expect(terminal?.type).toBe("request.failed");
+    processor.process(terminal!);
+
+    const component = runtime.getComponent("cache");
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(runtime.getRequest("req-1").attempts).toBe(3);
+    expect(component.totalProcessingAttempts).toBe(3);
+    expect(component.failedProcessingAttempts).toBe(3);
+    expect(dequeueEventOfType(runtime, "cache.set")).toBeUndefined();
+    expect(runtime.getCache("cache").size).toBe(0);
+  });
+
+  it("should reject a cache hit on a failed component", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    runtime.setComponentHealth("cache", "failed");
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const next = runtime.eventQueue.dequeue();
+
+    expect(next?.type).toBe("request.failed");
+    expect(next?.payload?.reason).toBe("component_failed");
+    processor.process(next!);
+
+    // No cache lookup (and therefore no hit) alongside the failure.
+    expect(dequeueEventOfType(runtime, "cache.hit")).toBeUndefined();
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+
+    // The lookup never ran, so no cache counters moved.
+    expect(runtime.getCache("cache").hits).toBe(0);
+    expect(runtime.getCache("cache").misses).toBe(0);
+  });
+
+  it("should reject a cache miss on a failed component", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    runtime.setComponentHealth("cache", "failed");
+
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const next = runtime.eventQueue.dequeue();
+
+    expect(next?.type).toBe("request.failed");
+    expect(next?.payload?.reason).toBe("component_failed");
+    processor.process(next!);
+
+    // No cache lookup (and therefore no miss) alongside the failure.
+    expect(dequeueEventOfType(runtime, "cache.miss")).toBeUndefined();
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(runtime.getCache("cache").misses).toBe(0);
+  });
+
+  it("should clear cache entries and restore counters on runtime reset", () => {
+    const graph = cacheGraph({ cache: { ttlMs: 1000, capacity: 2 } });
+    const { runtime } = createRuntime(graph);
+
+    runtime.setCacheEntry("cache", "K1", "v1");
+    runtime.setCacheEntry("cache", "K2", "v2");
+    // Exceeds capacity: evicts the least-recently-used entry (K1).
+    runtime.setCacheEntry("cache", "K3", "v3");
+
+    expect(runtime.getCache("cache").size).toBe(2);
+    expect(runtime.getCache("cache").evictions).toBe(1);
+
+    // Move the hit/miss counters.
+    runtime.getCacheEntry("cache", "K2");
+    runtime.getCacheEntry("cache", "missing");
+
+    expect(runtime.getCache("cache").hits).toBe(1);
+    expect(runtime.getCache("cache").misses).toBe(1);
+
+    runtime.reset();
+
+    const cache = runtime.getCache("cache");
+
+    expect(cache.size).toBe(0);
+    expect(cache.hits).toBe(0);
+    expect(cache.misses).toBe(0);
+    expect(cache.evictions).toBe(0);
+    expect(runtime.getCacheEntry("cache", "K2")).toBeUndefined();
+  });
+
+  it("should produce deterministic hit/miss outcomes and cache stats for the same seed and event sequence", () => {
+    const graph = cacheGraph();
+
+    const run = (seed: number) => {
+      const { runtime, processor } = createRuntime(graph, seed);
+      const outcomes: string[] = [];
+      const keys = ["GET:/a", "GET:/b", "GET:/a", "GET:/b"];
+
+      keys.forEach((cacheKey, index) => {
+        const requestId = `req-${index}`;
+
+        createCacheRequest(runtime, requestId, cacheKey);
+        routeToCache(processor, requestId, 10);
+
+        const next = runtime.eventQueue.dequeue()!;
+
+        if (next.type === "cache.hit") {
+          processor.process(next);
+          processor.process(dequeueEventOfType(runtime, "request.completed")!);
+          outcomes.push("hit");
+          return;
+        }
+
+        expect(next.type).toBe("cache.miss");
+        processor.process(next);
+        processor.process(
+          dequeueEventOfType(runtime, "request.processing_started")!,
+        );
+        processor.process(
+          dequeueEventOfType(runtime, "request.processing_completed")!,
+        );
+        processor.process(dequeueEventOfType(runtime, "cache.set")!);
+        processor.process(dequeueEventOfType(runtime, "request.completed")!);
+        outcomes.push("miss");
+      });
+
+      const cache = runtime.getCache("cache");
+
+      return {
+        outcomes,
+        stats: {
+          hits: cache.hits,
+          misses: cache.misses,
+          evictions: cache.evictions,
+        },
+      };
+    };
+
+    const runA = run(42);
+    const runB = run(42);
+
+    expect(runA).toEqual(runB);
+    expect(runA.outcomes).toEqual(["miss", "miss", "hit", "hit"]);
+    expect(runA.stats).toEqual({ hits: 2, misses: 2, evictions: 0 });
+  });
+});

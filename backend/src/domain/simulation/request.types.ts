@@ -20,4 +20,18 @@ export interface SimulationRequest {
 
   currentNodeId?: string;
   attempts: number;
+
+  /**
+   * The stable resource key a cache component uses to look this request up
+   * (for example `GET:/users/123`). Assigned deterministically when the
+   * request is created; independent of the request id.
+   */
+  cacheKey?: string;
+
+  /**
+   * Set when the request missed a cache lookup and entered the cache's
+   * capacity-bound processing path. Survives retries and queue admission so
+   * every later transition still knows the request is on the miss path.
+   */
+  cacheMiss?: boolean;
 }

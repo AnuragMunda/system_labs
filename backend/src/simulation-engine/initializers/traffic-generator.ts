@@ -54,6 +54,7 @@ export class TrafficGenerator {
         status: "pending",
         createdAtMs: eventTimestampMs,
         attempts: 0,
+        cacheKey: this.createCacheKey(sequence),
       };
 
       this.runtime.createRequest(request);
@@ -77,6 +78,23 @@ export class TrafficGenerator {
   /** Builds the deterministic request id for the given arrival slot. */
   private createRequestId(sequence: number): string {
     return `${this.runtime.simulation.id}:request:${sequence}`;
+  }
+
+  /**
+   * Builds the deterministic cache resource key for the given arrival slot.
+   *
+   * Configured keys are cycled round-robin so multiple requests share a key
+   * and a cache can produce hits. Without a configured pool every arrival
+   * receives a unique synthetic key, which never produces a hit.
+   */
+  private createCacheKey(sequence: number): string {
+    const cacheKeys = this.runtime.simulation.config.cacheKeys;
+
+    if (cacheKeys && cacheKeys.length > 0) {
+      return cacheKeys[sequence % cacheKeys.length]!;
+    }
+
+    return `GET:/resource/${sequence}`;
   }
 
   /** Builds the deterministic event id for the given arrival slot. */
