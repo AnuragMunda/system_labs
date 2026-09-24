@@ -72,6 +72,11 @@ export class RequestLifecycleHandlers {
       return;
     }
 
+    if (this.runtime.isDatabaseNode(event.targetNodeId)) {
+      this.handleDatabaseArrival(event, event.targetNodeId, requestId);
+      return;
+    }
+
     this.runtime.schedule(
       createEvent({
         simulationId: event.simulationId,
@@ -402,6 +407,27 @@ export class RequestLifecycleHandlers {
       return;
     }
 
+    // A completed database operation is surfaced as a `database.response`
+    // event before normal routing, so the operation's result is observable in
+    // the event stream. Routing is delegated to the response handler, keeping
+    // the database completion bookkeeping in a single place.
+    if (this.runtime.isDatabaseNode(sourceNodeId)) {
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "database.response",
+          sourceNodeId,
+          payload: {
+            requestId,
+            databaseOperation: request.databaseOperation ?? "read",
+          },
+        }),
+      );
+
+      return;
+    }
+
     this.routeRequest(event, sourceNodeId);
   }
 
@@ -548,7 +574,7 @@ export class RequestLifecycleHandlers {
    *                      request.routed after that edge's network latency
    */
 
-  private routeRequest(event: SimulationEvent, sourceNodeId: string): void {
+  public routeRequest(event: SimulationEvent, sourceNodeId: string): void {
     const edges = this.runtime.topology.getOutgoingEdges(sourceNodeId);
     const requestId = getRequestId(event);
 
@@ -613,6 +639,34 @@ export class RequestLifecycleHandlers {
         type: "request.routed",
         sourceNodeId: selectedEdge.source,
         targetNodeId: selectedEdge.target,
+        payload: {
+          requestId,
+        },
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Database Helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emits the `database.request` event when a request arrives at a database
+   * node, so the operation is processed through the database's capacity-bound
+   * path before its result is surfaced via `database.response`.
+   */
+  private handleDatabaseArrival(
+    event: SimulationEvent,
+    nodeId: string,
+    requestId: string,
+  ): void {
+    this.runtime.schedule(
+      createEvent({
+        simulationId: event.simulationId,
+        timestampMs: event.timestampMs,
+        type: "database.request",
+        sourceNodeId: nodeId,
+        targetNodeId: nodeId,
         payload: {
           requestId,
         },

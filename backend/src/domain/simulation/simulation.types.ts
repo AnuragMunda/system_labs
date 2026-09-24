@@ -7,6 +7,7 @@
  */
 
 import { ArchitectureGraph } from "../architecture/architecture.types.js";
+import { DatabaseOperation } from "./request.types.js";
 
 /** The lifecycle states a simulation can move through. */
 export type SimulationStatus =
@@ -63,6 +64,16 @@ export interface SimulationConfig {
    * (`GET:/resource/${sequence}`), which never produces a hit.
    */
   cacheKeys?: string[];
+
+  /**
+   * Database operations requests cycle through deterministically when a
+   * simulation includes a database component (e.g. `["read", "write"]`).
+   * Operations are assigned round-robin by arrival slot, so the database
+   * observes a stable mix of reads and writes.
+   *
+   * When omitted, requests default to a `"read"` operation.
+   */
+  databaseOperations?: DatabaseOperation[];
 
   // Scheduled component failures and recoveries applied during the run.
   failures?: FailureSchedule[];

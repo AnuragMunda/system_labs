@@ -10,6 +10,9 @@
 export type RequestStatus =
   "pending" | "in-flight" | "queued" | "completed" | "failed";
 
+/** The database operation a request performs against a database node. */
+export type DatabaseOperation = "read" | "write";
+
 export interface SimulationRequest {
   id: string;
   status: RequestStatus;
@@ -34,4 +37,12 @@ export interface SimulationRequest {
    * every later transition still knows the request is on the miss path.
    */
   cacheMiss?: boolean;
+
+  /**
+   * The database operation this request performs against a database component
+   * (for example `"read"` or `"write"`). Assigned deterministically when the
+   * request is created; independent of the request id. A request that reaches
+   * a database without one defaults to `"read"`.
+   */
+  databaseOperation?: DatabaseOperation;
 }

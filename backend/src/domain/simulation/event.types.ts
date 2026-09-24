@@ -19,6 +19,7 @@ export type SimulationEventType =
   | "cache.miss"
   | "cache.set"
   | "database.request"
+  | "database.response"
   | "queue.enqueue"
   | "queue.dequeue"
   | "queue.drain"

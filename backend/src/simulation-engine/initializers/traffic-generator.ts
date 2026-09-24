@@ -8,6 +8,7 @@
  */
 
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
+import type { DatabaseOperation } from "@/domain/simulation/request.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { createEvent } from "../utils/helpers.js";
 import { MILLISECONDS_PER_SECOND } from "../utils/constants.js";
@@ -55,6 +56,7 @@ export class TrafficGenerator {
         createdAtMs: eventTimestampMs,
         attempts: 0,
         cacheKey: this.createCacheKey(sequence),
+        databaseOperation: this.createDatabaseOperation(sequence),
       };
 
       this.runtime.createRequest(request);
@@ -95,6 +97,22 @@ export class TrafficGenerator {
     }
 
     return `GET:/resource/${sequence}`;
+  }
+
+  /**
+   * Builds the deterministic database operation for the given arrival slot.
+   *
+   * Configured operations are cycled round-robin so the database observes a
+   * stable mix. Without a configured pool every request defaults to a read.
+   */
+  private createDatabaseOperation(sequence: number): DatabaseOperation {
+    const operations = this.runtime.simulation.config.databaseOperations;
+
+    if (operations && operations.length > 0) {
+      return operations[sequence % operations.length]!;
+    }
+
+    return "read";
   }
 
   /** Builds the deterministic event id for the given arrival slot. */

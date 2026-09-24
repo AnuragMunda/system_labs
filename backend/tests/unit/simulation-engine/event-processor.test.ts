@@ -9,6 +9,7 @@ import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { ArchitectureNode } from "@/domain/architecture/component.types.js";
+import { DatabaseOperation } from "@/domain/simulation/request.types.js";
 import { describe, expect, it, vi } from "vitest";
 
 function node(
@@ -1457,6 +1458,15 @@ describe("DefaultEventProcessor", () => {
 
     processor.process(completed);
 
+    // A completed database operation is surfaced as a database.response event
+    // that, at a terminal node, completes the request.
+    const response = runtime.eventQueue.dequeue();
+
+    expect(response?.type).toBe("database.response");
+    expect(response?.timestampMs).toBe(30);
+
+    processor.process(response!);
+
     const scheduled = runtime.eventQueue.dequeue();
 
     expect(scheduled?.type).toBe("request.completed");
@@ -1752,11 +1762,18 @@ describe("DefaultEventProcessor", () => {
 
     const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
 
-    // Route the request to the terminal database node: it starts processing
-    // there immediately.
+    // Route the request to the terminal database node: it emits the database
+    // operation request before processing starts there.
     processor.process(
       createEvent("request.routed", 10, "req-1", "api", "database"),
     );
+
+    const databaseRequest = runtime.eventQueue.dequeue();
+
+    expect(databaseRequest?.type).toBe("database.request");
+    expect(databaseRequest?.timestampMs).toBe(10);
+
+    processor.process(databaseRequest!);
 
     const started = runtime.eventQueue.dequeue();
 
@@ -1765,8 +1782,8 @@ describe("DefaultEventProcessor", () => {
 
     expect(getRoutingStrategySpy).not.toHaveBeenCalled();
 
-    // Processing completes instantly (no latency) and, having no outgoing
-    // edges, the database completes the request without consulting routing.
+    // Processing completes instantly (no latency) and the completed operation
+    // is surfaced as a database.response event.
     processor.process(started!);
 
     const processingCompleted = dequeueEventOfType(
@@ -1778,6 +1795,15 @@ describe("DefaultEventProcessor", () => {
     expect(processingCompleted?.timestampMs).toBe(10);
 
     processor.process(processingCompleted!);
+
+    const response = dequeueEventOfType(runtime, "database.response");
+
+    expect(response?.type).toBe("database.response");
+    expect(response?.timestampMs).toBe(10);
+
+    // The response, having no outgoing edges, completes the request without
+    // consulting routing.
+    processor.process(response!);
 
     const completed = dequeueEventOfType(runtime, "request.completed");
 
@@ -2329,8 +2355,19 @@ describe("error rate failure lifecycle", () => {
     expect(routed?.type).toBe("request.routed");
     expect(routed?.targetNodeId).toBe("database");
 
-    // Arriving at the database starts processing immediately...
+    // Arriving at the database emits the database operation request...
     processor.process(routed!);
+
+    const databaseRequest = dequeueEventOfType(runtime, "database.request");
+
+    expect(databaseRequest).toMatchObject({
+      type: "database.request",
+      timestampMs: 35,
+      sourceNodeId: "database",
+    });
+
+    // ...which starts processing immediately...
+    processor.process(databaseRequest!);
 
     const startedDatabase = dequeueEventOfType(
       runtime,
@@ -2345,7 +2382,8 @@ describe("error rate failure lifecycle", () => {
 
     processor.process(startedDatabase!);
 
-    // ...which, with no latency, completes at the same timestamp.
+    // ...which, with no latency, completes at the same timestamp, surfaced as
+    // a database.response before the terminal node completes the request.
     const completedDatabase = dequeueEventOfType(
       runtime,
       "request.processing_completed",
@@ -2356,8 +2394,14 @@ describe("error rate failure lifecycle", () => {
       timestampMs: 35,
     });
 
-    // A terminal node completes the request after processing.
     processor.process(completedDatabase!);
+
+    const response = dequeueEventOfType(runtime, "database.response");
+
+    expect(response?.type).toBe("database.response");
+    expect(response?.timestampMs).toBe(35);
+
+    processor.process(response!);
 
     const completed = dequeueEventOfType(runtime, "request.completed");
 
@@ -2767,6 +2811,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
         timestampMs: 25,
       },
       { type: "request.routed", target: "database", timestampMs: 45 },
+      { type: "database.request", target: "database", timestampMs: 45 },
       {
         type: "request.processing_started",
         target: "database",
@@ -2777,6 +2822,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
         target: undefined,
         timestampMs: 50,
       },
+      { type: "database.response", target: undefined, timestampMs: 50 },
       { type: "request.completed", target: undefined, timestampMs: 50 },
     ]);
 
@@ -4036,5 +4082,849 @@ describe("cache flow", () => {
     expect(runA).toEqual(runB);
     expect(runA.outcomes).toEqual(["miss", "miss", "hit", "hit"]);
     expect(runA.stats).toEqual({ hits: 2, misses: 2, evictions: 0 });
+  });
+});
+
+describe("database flow", () => {
+  const healthThresholds = {
+    utilization: { degraded: 2, critical: 3 },
+    errorRate: { degraded: 2, critical: 3 },
+    latencyMs: { degraded: 1_000_000, critical: 2_000_000 },
+  };
+
+  function databaseGraph(
+    config: ArchitectureNode["config"] = {},
+  ): ArchitectureGraph {
+    return {
+      nodes: [
+        node("client", "client"),
+        node("database", "database", {
+          replicas: 1,
+          concurrency: 1,
+          latencyMs: 0,
+          // Stay healthy throughout so database tests observe the operation
+          // paths without health-transition events interleaving with requests.
+          healthThresholds,
+          ...config,
+        }),
+      ],
+      edges: [
+        { id: "edge-1", source: "client", target: "database", config: {} },
+      ],
+    };
+  }
+
+  function createDatabaseRequest(
+    runtime: SimulationRuntime,
+    requestId: string,
+    operation?: DatabaseOperation,
+  ): void {
+    runtime.createRequest({
+      id: requestId,
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+      ...(operation ? { databaseOperation: operation } : {}),
+    });
+  }
+
+  function routeToDatabase(
+    processor: DefaultEventProcessor,
+    requestId: string,
+    timestampMs = 10,
+  ): void {
+    processor.process(
+      createEvent(
+        "request.routed",
+        timestampMs,
+        requestId,
+        "client",
+        "database",
+      ),
+    );
+  }
+
+  it("should emit a database.request when a request is routed to a database node", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+
+    // Routing alone schedules the operation request; processing starts later.
+    const scheduled = runtime.eventQueue.dequeue()!;
+
+    expect(scheduled.type).toBe("database.request");
+    expect(scheduled.sourceNodeId).toBe("database");
+    expect(scheduled.targetNodeId).toBe("database");
+    expect(scheduled.timestampMs).toBe(10);
+    expect(scheduled.payload?.requestId).toBe("req-1");
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+  });
+
+  it("should start processing after the database request is processed", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+
+    const started = dequeueEventOfType(runtime, "request.processing_started");
+
+    expect(started).toBeDefined();
+    expect(started?.sourceNodeId).toBe("database");
+    expect(started?.timestampMs).toBe(10);
+    expect(started?.payload?.requestId).toBe("req-1");
+    expect(started?.payload?.databaseOperation).toBe("read");
+  });
+
+  it("should default a request without an operation to read", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+
+    const started = dequeueEventOfType(runtime, "request.processing_started");
+
+    expect(runtime.getRequest("req-1").databaseOperation).toBe("read");
+    expect(started?.payload?.databaseOperation).toBe("read");
+  });
+
+  it("should preserve an explicitly stamped write operation", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "write");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+
+    const started = dequeueEventOfType(runtime, "request.processing_started");
+
+    expect(runtime.getRequest("req-1").databaseOperation).toBe("write");
+    expect(started?.payload?.databaseOperation).toBe("write");
+  });
+
+  it("should reject an unknown database operation", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "upsert" as DatabaseOperation);
+    routeToDatabase(processor, "req-1", 10);
+
+    const request = dequeueEventOfType(runtime, "database.request");
+
+    expect(() => processor.process(request!)).toThrow(
+      /Unknown database operation "upsert"/,
+    );
+    // The invalid operation was neither resolved nor defaulted.
+    expect(runtime.getRequest("req-1").databaseOperation).toBe("upsert");
+    expect(
+      dequeueEventOfType(runtime, "request.processing_started"),
+    ).toBeUndefined();
+  });
+
+  it("should reject a database.request for a non-database node", () => {
+    const { processor } = createRuntime(databaseGraph());
+
+    expect(() =>
+      processor.process(createEvent("database.request", 10, "req-1", "client")),
+    ).toThrow(/non-database node/);
+  });
+
+  it("should reject a database.response for a non-database node", () => {
+    const { processor } = createRuntime(databaseGraph());
+
+    expect(() =>
+      processor.process(
+        createEvent("database.response", 10, "req-1", "client"),
+      ),
+    ).toThrow(/non-database node/);
+  });
+
+  it("should complete a terminal database request via database.response", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "write");
+    routeToDatabase(processor, "req-1", 10);
+
+    const transcript: string[] = [];
+    let response: SimulationEvent | undefined;
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+
+      transcript.push(event.type);
+
+      if (event.type === "database.response") {
+        response = event;
+      }
+
+      processor.process(event);
+    }
+
+    expect(transcript).toEqual([
+      "database.request",
+      "request.processing_started",
+      "request.processing_completed",
+      "database.response",
+      "request.completed",
+    ]);
+    expect(response?.sourceNodeId).toBe("database");
+    expect(response?.timestampMs).toBe(10);
+    expect(response?.payload?.requestId).toBe("req-1");
+    expect(response?.payload?.databaseOperation).toBe("write");
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+  });
+
+  it("should apply the database node's latency to operation processing", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 20 }),
+    );
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
+
+    expect(completed?.timestampMs).toBe(30);
+    processor.process(completed!);
+
+    const response = dequeueEventOfType(runtime, "database.response");
+
+    expect(response?.timestampMs).toBe(30);
+    processor.process(response!);
+
+    const done = dequeueEventOfType(runtime, "request.completed");
+
+    expect(done?.timestampMs).toBe(30);
+    expect(runtime.getComponent("database").totalProcessingLatencyMs).toBe(20);
+  });
+
+  it("should consume capacity and count an attempt while an operation is in-flight", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const component = runtime.getComponent("database");
+
+    expect(runtime.getActiveRequestCount("database")).toBe(1);
+    expect(component.totalProcessingAttempts).toBe(1);
+  });
+
+  it("should record processing latency and free capacity when an operation completes", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 20 }),
+    );
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    expect(runtime.getActiveRequestCount("database")).toBe(1);
+
+    const completed = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
+
+    expect(completed?.timestampMs).toBe(30);
+    processor.process(completed!);
+
+    const component = runtime.getComponent("database");
+
+    expect(component.totalProcessingLatencyMs).toBe(20);
+    expect(component.lastProcessingLatencyMs).toBe(20);
+    expect(component.processedRequests).toBe(1);
+    expect(component.activeRequests).toBe(0);
+  });
+
+  it("should evaluate component health when an operation completes", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const spy = vi.spyOn(runtime, "evaluateComponentHealth");
+
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_completed")!,
+    );
+
+    expect(spy).toHaveBeenCalledWith("database");
+
+    spy.mockRestore();
+  });
+
+  it("should forward a completed operation downstream from a database with outgoing edges", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("database", "database", {
+          latencyMs: 0,
+          healthThresholds,
+        }),
+        node("api", "api", { latencyMs: 0, healthThresholds }),
+      ],
+      edges: [
+        { id: "edge-1", source: "client", target: "database", config: {} },
+        {
+          id: "edge-2",
+          source: "database",
+          target: "api",
+          config: { latencyMs: 5 },
+        },
+      ],
+    };
+    const { runtime, processor } = createRuntime(graph);
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    const request = runtime.getRequest("req-1");
+
+    // The response routed onward (5ms of network latency) and completed at
+    // the next hop — the database never terminated the request itself.
+    expect(request.status).toBe("completed");
+    expect(request.currentNodeId).toBe("api");
+  });
+
+  it("should expose capacity equal to concurrency × replicas", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ concurrency: 4, replicas: 2 }),
+    );
+
+    expect(runtime.getEffectiveConcurrency("database")).toBe(8);
+
+    const requestIds = Array.from({ length: 9 }, (_, index) => `req-${index}`);
+
+    for (const requestId of requestIds) {
+      createDatabaseRequest(runtime, requestId, "read");
+      routeToDatabase(processor, requestId, 10);
+    }
+
+    // FIFO keeps the nine database.request events ahead of the
+    // processing_started events they generate.
+    for (let index = 0; index < 9; index += 1) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    // Start the eight operations that fit the capacity; the ninth queues.
+    for (let index = 0; index < 9; index += 1) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    expect(runtime.getActiveRequestCount("database")).toBe(8);
+    expect(runtime.getQueuedRequestCount("database")).toBe(1);
+    expect(runtime.getRequest("req-8").status).toBe("queued");
+  });
+
+  it("should drain the next queued operation when a slot frees", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 30 }),
+    );
+
+    createDatabaseRequest(runtime, "A", "read");
+    createDatabaseRequest(runtime, "B", "write");
+
+    // A enters processing and holds the only slot.
+    routeToDatabase(processor, "A", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    // B's operation is admitted while A is still in-flight, so B queues.
+    routeToDatabase(processor, "B", 10);
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+
+    expect(runtime.getQueuedRequestCount("database")).toBe(1);
+    expect(runtime.getRequest("B").status).toBe("queued");
+
+    // Completing A frees the slot; the freed capacity drains B.
+    const completeA = dequeueEventOfType(
+      runtime,
+      "request.processing_completed",
+    );
+
+    expect(completeA?.payload?.requestId).toBe("A");
+    processor.process(completeA!);
+
+    const transcript: { type: string; requestId?: unknown }[] = [];
+    const responses: { requestId?: unknown; operation?: unknown }[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+
+      transcript.push({
+        type: event.type,
+        requestId: event.payload?.requestId,
+      });
+
+      if (event.type === "database.response") {
+        responses.push({
+          requestId: event.payload?.requestId,
+          operation: event.payload?.databaseOperation,
+        });
+      }
+
+      processor.process(event);
+    }
+
+    // The drain ran and admitted B as a normal start.
+    expect(transcript).toContainEqual({
+      type: "queue.drain",
+      requestId: undefined,
+    });
+    expect(transcript).toContainEqual({
+      type: "queue.dequeue",
+      requestId: "B",
+    });
+    expect(transcript).toContainEqual({
+      type: "request.processing_started",
+      requestId: "B",
+    });
+    expect(responses).toEqual([
+      { requestId: "A", operation: "read" },
+      { requestId: "B", operation: "write" },
+    ]);
+
+    expect(runtime.getRequest("A").status).toBe("completed");
+    expect(runtime.getRequest("B").status).toBe("completed");
+    expect(runtime.getQueuedRequestCount("database")).toBe(0);
+    expect(runtime.getActiveRequestCount("database")).toBe(0);
+  });
+
+  it("should preserve databaseOperation when a queued operation is admitted later", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 30 }),
+    );
+
+    createDatabaseRequest(runtime, "A", "read");
+    createDatabaseRequest(runtime, "B", "write");
+
+    routeToDatabase(processor, "A", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    routeToDatabase(processor, "B", 10);
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+
+    // B is queued with its operation intact.
+    expect(runtime.getRequest("B").status).toBe("queued");
+    expect(runtime.getRequest("B").databaseOperation).toBe("write");
+    expect(runtime.getQueuedRequestCount("database")).toBe(1);
+
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_completed")!,
+    );
+
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    // The operation survived queue admission and reached the response.
+    expect(runtime.getRequest("B").databaseOperation).toBe("write");
+    expect(runtime.getRequest("B").status).toBe("completed");
+    expect(runtime.getRequest("A").status).toBe("completed");
+  });
+
+  it("should fail a request when the database component has failed", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    runtime.setComponentHealth("database", "failed");
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed).toBeDefined();
+    expect(failed?.payload?.reason).toBe("component_failed");
+    processor.process(failed!);
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(dequeueEventOfType(runtime, "database.response")).toBeUndefined();
+
+    const component = runtime.getComponent("database");
+
+    expect(component.activeRequests).toBe(0);
+    expect(component.processedRequests).toBe(0);
+  });
+
+  it("should fail a request when an operation attempt errors", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ errorRate: 1 }),
+    );
+
+    createDatabaseRequest(runtime, "req-1", "write");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed).toBeDefined();
+    expect(failed?.payload?.reason).toBe("component_error");
+    processor.process(failed!);
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(dequeueEventOfType(runtime, "database.response")).toBeUndefined();
+    expect(
+      dequeueEventOfType(runtime, "request.processing_completed"),
+    ).toBeUndefined();
+    expect(dequeueEventOfType(runtime, "request.completed")).toBeUndefined();
+    expect(runtime.getActiveRequestCount("database")).toBe(0);
+  });
+
+  it("should respect the component error rate and retry policy on an operation", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({
+        errorRate: 1,
+        retryPolicy: { retries: 2, circuitBreaker: false },
+      }),
+    );
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+
+    const retryEvents: number[] = [];
+    let terminal: SimulationEvent | undefined;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const started = dequeueEventOfType(runtime, "request.processing_started");
+
+      expect(started).toBeDefined();
+      processor.process(started!);
+
+      // The operation survives every retried attempt.
+      expect(runtime.getRequest("req-1").databaseOperation).toBe("read");
+      expect(runtime.getRequest("req-1").attempts).toBe(attempt);
+
+      const outcome = runtime.eventQueue.dequeue();
+
+      if (attempt < 3) {
+        expect(outcome?.type).toBe("request.retry");
+        retryEvents.push(outcome!.timestampMs);
+        processor.process(outcome!);
+      } else {
+        terminal = outcome;
+      }
+    }
+
+    expect(retryEvents).toHaveLength(2);
+    expect(terminal?.type).toBe("request.failed");
+    processor.process(terminal!);
+
+    const component = runtime.getComponent("database");
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(runtime.getRequest("req-1").attempts).toBe(3);
+    expect(component.totalProcessingAttempts).toBe(3);
+    expect(component.failedProcessingAttempts).toBe(3);
+    expect(dequeueEventOfType(runtime, "database.response")).toBeUndefined();
+    expect(dequeueEventOfType(runtime, "request.completed")).toBeUndefined();
+  });
+
+  it("should route a non-database node without emitting database events", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", { latencyMs: 0, healthThresholds }),
+      ],
+      edges: [{ id: "edge-1", source: "client", target: "api", config: {} }],
+    };
+    const { runtime, processor } = createRuntime(graph);
+
+    runtime.createRequest({
+      id: "req-1",
+      status: "in-flight",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+    });
+
+    processor.process(
+      createEvent("request.routed", 10, "req-1", "client", "api"),
+    );
+
+    // Only generic processing starts for non-database nodes.
+    expect(runtime.eventQueue.isEmpty()).toBe(false);
+
+    const types: string[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      types.push(runtime.eventQueue.dequeue()!.type);
+    }
+
+    expect(types).toContain("request.processing_started");
+    expect(types).not.toContain("database.request");
+    expect(types).not.toContain("database.response");
+  });
+
+  it("should produce deterministic operation outcomes for the same seed", () => {
+    const graph = databaseGraph({ errorRate: 0.5 });
+
+    const run = (seed: number) => {
+      const { runtime, processor } = createRuntime(graph, seed);
+      const operations: DatabaseOperation[] = [
+        "read",
+        "write",
+        "read",
+        "write",
+        "read",
+      ];
+      const outcomes: string[] = [];
+
+      operations.forEach((operation, index) => {
+        const requestId = `req-${index}`;
+
+        createDatabaseRequest(runtime, requestId, operation);
+        routeToDatabase(processor, requestId, 10);
+
+        // Fully resolve this request before the next one arrives so the
+        // trace reflects the seed-driven error decisions alone.
+        while (!runtime.eventQueue.isEmpty()) {
+          processor.process(runtime.eventQueue.dequeue()!);
+        }
+
+        outcomes.push(runtime.getRequest(requestId).status);
+      });
+
+      const component = runtime.getComponent("database");
+
+      return {
+        outcomes,
+        component: {
+          attempts: component.totalProcessingAttempts,
+          failures: component.failedProcessingAttempts,
+          processed: component.processedRequests,
+        },
+      };
+    };
+
+    const runA = run(42);
+    const runB = run(42);
+
+    expect(runA).toEqual(runB);
+    expect(runA.outcomes).toHaveLength(5);
+    for (const outcome of runA.outcomes) {
+      expect(["completed", "failed"]).toContain(outcome);
+    }
+  });
+
+  it("should carry the read operation through the full event flow", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+
+    const eventOperations: { type: string; operation?: unknown }[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+      eventOperations.push({
+        type: event.type,
+        operation: event.payload?.databaseOperation,
+      });
+      processor.process(event);
+    }
+
+    expect(eventOperations).toContainEqual({
+      type: "request.processing_started",
+      operation: "read",
+    });
+    expect(eventOperations).toContainEqual({
+      type: "database.response",
+      operation: "read",
+    });
+
+    const request = runtime.getRequest("req-1");
+
+    expect(request.databaseOperation).toBe("read");
+    expect(request.status).toBe("completed");
+  });
+
+  it("should dequeue queued database requests in FIFO order", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 50 }),
+    );
+
+    createDatabaseRequest(runtime, "A", "read");
+    routeToDatabase(processor, "A", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    // B and C arrive while A holds the only slot, so both queue behind it.
+    createDatabaseRequest(runtime, "B", "write");
+    routeToDatabase(processor, "B", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    createDatabaseRequest(runtime, "C", "read");
+    routeToDatabase(processor, "C", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    expect(runtime.getQueuedRequestCount("database")).toBe(2);
+    expect(runtime.getRequest("B").status).toBe("queued");
+    expect(runtime.getRequest("C").status).toBe("queued");
+
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_completed")!,
+    );
+
+    const transcript: string[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+      transcript.push(`${event.type}:${event.payload?.requestId}`);
+      processor.process(event);
+    }
+
+    const dequeueB = transcript.indexOf("queue.dequeue:B");
+    const dequeueC = transcript.indexOf("queue.dequeue:C");
+
+    expect(dequeueB).toBeGreaterThan(-1);
+    expect(dequeueC).toBeGreaterThan(-1);
+    expect(dequeueB).toBeLessThan(dequeueC);
+    expect(transcript.indexOf("request.processing_started:B")).toBeLessThan(
+      transcript.indexOf("request.processing_started:C"),
+    );
+    expect(transcript.indexOf("database.response:B")).toBeLessThan(
+      transcript.indexOf("database.response:C"),
+    );
+
+    expect(runtime.getRequest("A").status).toBe("completed");
+    expect(runtime.getRequest("B").status).toBe("completed");
+    expect(runtime.getRequest("C").status).toBe("completed");
+    expect(runtime.getQueuedRequestCount("database")).toBe(0);
+  });
+
+  it("should not process database requests while failed, then recover", () => {
+    const { runtime, processor } = createRuntime(databaseGraph());
+
+    runtime.setComponentHealth("database", "failed");
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed).toBeDefined();
+    expect(failed?.payload?.reason).toBe("component_failed");
+    processor.process(failed!);
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(runtime.getActiveRequestCount("database")).toBe(0);
+    expect(runtime.getComponent("database").processedRequests).toBe(0);
+
+    // The component recovers: new database processing is accepted again.
+    runtime.setComponentHealth("database", "healthy");
+
+    createDatabaseRequest(runtime, "req-2", "read");
+    routeToDatabase(processor, "req-2", 10);
+
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    expect(runtime.getRequest("req-2").status).toBe("completed");
+  });
+
+  it("should clear database runtime state and queued requests on reset", () => {
+    const { runtime, processor } = createRuntime(
+      databaseGraph({ latencyMs: 20 }),
+    );
+
+    createDatabaseRequest(runtime, "req-1", "read");
+    routeToDatabase(processor, "req-1", 10);
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    // Leave req-2 in-flight on the only slot and req-3 waiting queued.
+    createDatabaseRequest(runtime, "req-2", "read");
+    routeToDatabase(processor, "req-2", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    createDatabaseRequest(runtime, "req-3", "read");
+    routeToDatabase(processor, "req-3", 10);
+    processor.process(dequeueEventOfType(runtime, "database.request")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    expect(runtime.getActiveRequestCount("database")).toBe(1);
+    expect(runtime.getQueuedRequestCount("database")).toBe(1);
+
+    runtime.reset();
+
+    const component = runtime.getComponent("database");
+
+    expect(runtime.getActiveRequestCount("database")).toBe(0);
+    expect(runtime.getQueuedRequestCount("database")).toBe(0);
+    expect(component.processedRequests).toBe(0);
+    expect(component.totalProcessingAttempts).toBe(0);
+    expect(component.failedProcessingAttempts).toBe(0);
+    expect(component.totalProcessingLatencyMs).toBe(0);
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(() => runtime.getRequest("req-2")).toThrow();
+
+    // A fresh request runs the full database flow after the reset.
+    createDatabaseRequest(runtime, "req-4", "write");
+    routeToDatabase(processor, "req-4", 10);
+
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    expect(runtime.getRequest("req-4").status).toBe("completed");
   });
 });

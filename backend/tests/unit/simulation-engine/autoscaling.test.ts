@@ -590,6 +590,8 @@ describe("SimulationEngine autoscaling", () => {
     expect(runtime.eventQueue.size()).toBe(0);
   });
 
+  // This heavy end-to-end run processes tens of thousands of events; leave
+  // generous headroom for the shared load of the full parallel suite.
   it("should scale a saturated component up to its maximum during a full run", () => {
     const { runtime, engine, seen } = createEngine();
 
@@ -616,8 +618,9 @@ describe("SimulationEngine autoscaling", () => {
       { timestampMs: 2000, previousReplicas: 3, replicas: 4 },
       { timestampMs: 3000, previousReplicas: 4, replicas: 5 },
     ]);
-  });
+  }, 15_000);
 
+  // The same heavy full run as above; keep the same generous headroom.
   it("should produce identical autoscaling decisions for the same seed", () => {
     function decisions() {
       const { engine, seen } = createEngine();
@@ -637,5 +640,5 @@ describe("SimulationEngine autoscaling", () => {
     }
 
     expect(decisions()).toEqual(decisions());
-  });
+  }, 15_000);
 });

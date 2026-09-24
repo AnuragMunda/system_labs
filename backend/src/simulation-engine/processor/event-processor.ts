@@ -18,12 +18,14 @@ import { RequestLifecycleHandlers } from "./handlers/request-lifecycle.js";
 import { ComponentLifecycleHandlers } from "./handlers/component-lifecycle.js";
 import { AutoscalingHandlers } from "./handlers/autoscaling.js";
 import { CacheHandlers } from "./handlers/cache-handling.js";
+import { DatabaseHandlers } from "./handlers/database-handling.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   private readonly requestHandlers: RequestLifecycleHandlers;
   private readonly componentHandlers: ComponentLifecycleHandlers;
   private readonly autoscalingHandlers: AutoscalingHandlers;
   private readonly cacheHandlers: CacheHandlers;
+  private readonly databaseHandlers: DatabaseHandlers;
 
   constructor(
     runtime: SimulationRuntime,
@@ -38,6 +40,7 @@ export class DefaultEventProcessor implements EventProcessor {
       autoscalingScheduler,
     );
     this.cacheHandlers = new CacheHandlers(runtime);
+    this.databaseHandlers = new DatabaseHandlers(runtime, this.requestHandlers);
   }
 
   process(event: SimulationEvent): void {
@@ -112,6 +115,14 @@ export class DefaultEventProcessor implements EventProcessor {
 
       case "cache.set":
         this.cacheHandlers.handleCacheSet(event);
+        break;
+
+      case "database.request":
+        this.databaseHandlers.handleDatabaseRequest(event);
+        break;
+
+      case "database.response":
+        this.databaseHandlers.handleDatabaseResponse(event);
         break;
 
       default:

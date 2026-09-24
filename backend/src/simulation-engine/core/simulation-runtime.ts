@@ -615,4 +615,13 @@ export class SimulationRuntime {
 
     return component.health !== "failed";
   }
+
+  /**
+   * Returns true when the node is a database component. Database nodes receive
+   * database operations (`database.request` / `database.response`) instead of
+   * generic processing and routing when a request is routed to them.
+   */
+  isDatabaseNode(nodeId: string): boolean {
+    return this.topology.getNode(nodeId)?.type === "database";
+  }
 }
