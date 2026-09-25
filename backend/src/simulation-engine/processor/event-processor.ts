@@ -19,6 +19,7 @@ import { ComponentLifecycleHandlers } from "./handlers/component-lifecycle.js";
 import { AutoscalingHandlers } from "./handlers/autoscaling.js";
 import { CacheHandlers } from "./handlers/cache-handling.js";
 import { DatabaseHandlers } from "./handlers/database-handling.js";
+import { NetworkHandlers } from "./handlers/network-handling.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   private readonly requestHandlers: RequestLifecycleHandlers;
@@ -26,6 +27,7 @@ export class DefaultEventProcessor implements EventProcessor {
   private readonly autoscalingHandlers: AutoscalingHandlers;
   private readonly cacheHandlers: CacheHandlers;
   private readonly databaseHandlers: DatabaseHandlers;
+  private readonly networkHandlers: NetworkHandlers;
 
   constructor(
     runtime: SimulationRuntime,
@@ -41,6 +43,7 @@ export class DefaultEventProcessor implements EventProcessor {
     );
     this.cacheHandlers = new CacheHandlers(runtime);
     this.databaseHandlers = new DatabaseHandlers(runtime, this.requestHandlers);
+    this.networkHandlers = new NetworkHandlers(runtime);
   }
 
   process(event: SimulationEvent): void {
@@ -123,6 +126,10 @@ export class DefaultEventProcessor implements EventProcessor {
 
       case "database.response":
         this.databaseHandlers.handleDatabaseResponse(event);
+        break;
+
+      case "network.transmission_started":
+        this.networkHandlers.handleTransmission(event);
         break;
 
       default:

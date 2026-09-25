@@ -44,7 +44,7 @@ export class SimulationRuntime {
   readonly eventQueue: EventQueue = new EventQueue();
   readonly componentRequestQueue: ComponentRequestQueue =
     new ComponentRequestQueue();
-  readonly random: SimulationRandom;
+  random: SimulationRandom;
   /** Evaluates component health from runtime counters and configured thresholds. */
   readonly healthEvaluator = new ComponentHealthEvaluator();
 
@@ -558,6 +558,8 @@ export class SimulationRuntime {
   reset(): void {
     this.clock.reset();
     this.eventQueue.clear();
+
+    this.random = new SimulationRandom(this.simulation.seed);
 
     this.requests.clear();
     this.components.clear();

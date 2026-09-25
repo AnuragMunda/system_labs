@@ -15,6 +15,7 @@ export type SimulationEventType =
   | "request.completed"
   | "request.failed"
   | "request.retry"
+  | "network.transmission_started"
   | "cache.hit"
   | "cache.miss"
   | "cache.set"

@@ -20,6 +20,9 @@ export const DEFAULT_RETRY_DELAY_MS = 10;
 /** Applied when a connection has no latency configured. */
 export const DEFAULT_NETWORK_LATENCY_MS = 10;
 
+/** Applied when a request does not declare a payload size. */
+export const DEFAULT_REQUEST_SIZE_BYTES = 1024;
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------

@@ -11,7 +11,10 @@ import { SimulationRequest } from "@/domain/simulation/request.types.js";
 import type { DatabaseOperation } from "@/domain/simulation/request.types.js";
 import { SimulationRuntime } from "../core/simulation-runtime.js";
 import { createEvent } from "../utils/helpers.js";
-import { MILLISECONDS_PER_SECOND } from "../utils/constants.js";
+import {
+  DEFAULT_REQUEST_SIZE_BYTES,
+  MILLISECONDS_PER_SECOND,
+} from "../utils/constants.js";
 
 /**
  * Produces the starting traffic of a simulation. It reads the rate and
@@ -57,6 +60,7 @@ export class TrafficGenerator {
         attempts: 0,
         cacheKey: this.createCacheKey(sequence),
         databaseOperation: this.createDatabaseOperation(sequence),
+        sizeBytes: DEFAULT_REQUEST_SIZE_BYTES,
       };
 
       this.runtime.createRequest(request);

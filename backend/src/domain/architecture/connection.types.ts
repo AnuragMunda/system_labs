@@ -25,5 +25,4 @@ interface ConnectionConfig {
 
   // Extended editor configuration
   protocol?: string; // e.g. "http", "grpc", "tcp", "kafka"
-  trafficRate?: number; // Requests per second flowing over the connection
 }

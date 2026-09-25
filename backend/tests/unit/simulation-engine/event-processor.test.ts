@@ -9,7 +9,10 @@ import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { ArchitectureGraph } from "@/domain/architecture/architecture.types.js";
 import { ArchitectureNode } from "@/domain/architecture/component.types.js";
+import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { DatabaseOperation } from "@/domain/simulation/request.types.js";
+import { DEFAULT_REQUEST_SIZE_BYTES } from "@/simulation-engine/utils/constants.js";
+import { getTransmissionTimeMs } from "@/simulation-engine/utils/helpers.js";
 import { describe, expect, it, vi } from "vitest";
 
 function node(
@@ -163,11 +166,22 @@ describe("DefaultEventProcessor", () => {
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    expect(scheduled?.type).toBe("request.routed");
-    expect(scheduled?.timestampMs).toBe(10);
+    expect(scheduled?.type).toBe("network.transmission_started");
+    expect(scheduled?.timestampMs).toBe(0);
     expect(scheduled?.sourceNodeId).toBe("client");
     expect(scheduled?.targetNodeId).toBe("api");
     expect(scheduled?.payload?.requestId).toBe("req-1");
+    expect(scheduled?.payload?.edgeId).toBe("edge-1");
+
+    processor.process(scheduled!);
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed?.type).toBe("request.routed");
+    expect(routed?.timestampMs).toBe(10);
+    expect(routed?.sourceNodeId).toBe("client");
+    expect(routed?.targetNodeId).toBe("api");
+    expect(routed?.payload?.requestId).toBe("req-1");
 
     // Only the current node is recorded; the request is not re-created.
     const request = runtime.getRequest("req-1");
@@ -236,10 +250,19 @@ describe("DefaultEventProcessor", () => {
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    // Edge client->api has no latency configured, so the 10ms default applies.
-    expect(scheduled?.type).toBe("request.routed");
-    expect(scheduled?.timestampMs).toBe(10);
+    // Routing emits the network transmission for the connection; the default
+    // 10ms latency applies when the edge configures none.
+    expect(scheduled?.type).toBe("network.transmission_started");
+    expect(scheduled?.timestampMs).toBe(0);
     expect(scheduled?.targetNodeId).toBe("api");
+
+    processor.process(scheduled!);
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed?.type).toBe("request.routed");
+    expect(routed?.timestampMs).toBe(10);
+    expect(routed?.targetNodeId).toBe("api");
   });
 
   it("should apply network latency after processing completes on the next hop", () => {
@@ -289,11 +312,20 @@ describe("DefaultEventProcessor", () => {
 
     const scheduled = runtime.eventQueue.dequeue();
 
-    expect(scheduled?.type).toBe("request.routed");
-    // Processing completed at 30ms; edge api->database latency is 40ms.
-    expect(scheduled?.timestampMs).toBe(70);
+    expect(scheduled?.type).toBe("network.transmission_started");
+    expect(scheduled?.timestampMs).toBe(30);
     expect(scheduled?.sourceNodeId).toBe("api");
     expect(scheduled?.targetNodeId).toBe("database");
+
+    processor.process(scheduled!);
+
+    const routed = runtime.eventQueue.dequeue();
+
+    expect(routed?.type).toBe("request.routed");
+    // Processing completed at 30ms; edge api->database latency is 40ms.
+    expect(routed?.timestampMs).toBe(70);
+    expect(routed?.sourceNodeId).toBe("api");
+    expect(routed?.targetNodeId).toBe("database");
 
     const component = runtime.getComponent("api");
 
@@ -1576,21 +1608,24 @@ describe("DefaultEventProcessor", () => {
     });
 
     // Route two requests from the gateway; each should take the next edge in
-    // round-robin order without a routing policy failure.
+    // round-robin order without a routing policy failure. The chosen edge is
+    // surfaced as the network transmission for that connection.
     processor.process(createEvent("request.created", 10, "req-1", "gateway"));
     processor.process(createEvent("request.created", 10, "req-2", "gateway"));
 
     const first = runtime.eventQueue.dequeue();
 
-    expect(first?.type).toBe("request.routed");
+    expect(first?.type).toBe("network.transmission_started");
     expect(first?.targetNodeId).toBe("api-1");
     expect(first?.timestampMs).toBe(10);
+    expect(first?.payload?.edgeId).toBe("edge-1");
 
     const second = runtime.eventQueue.dequeue();
 
-    expect(second?.type).toBe("request.routed");
+    expect(second?.type).toBe("network.transmission_started");
     expect(second?.targetNodeId).toBe("api-2");
     expect(second?.timestampMs).toBe(10);
+    expect(second?.payload?.edgeId).toBe("edge-2");
   });
 
   it("should keep separate routing state for different source nodes", () => {
@@ -1716,9 +1751,18 @@ describe("DefaultEventProcessor", () => {
 
     const first = runtime.eventQueue.dequeue();
 
-    expect(first?.type).toBe("request.routed");
+    expect(first?.type).toBe("network.transmission_started");
     expect(first?.targetNodeId).toBe("api-1");
-    expect(first?.timestampMs).toBe(5);
+    expect(first?.timestampMs).toBe(0);
+    expect(first?.payload?.latencyMs).toBe(5);
+
+    processor.process(first!);
+
+    const routedFirst = runtime.eventQueue.dequeue();
+
+    expect(routedFirst?.type).toBe("request.routed");
+    expect(routedFirst?.targetNodeId).toBe("api-1");
+    expect(routedFirst?.timestampMs).toBe(5);
 
     // Request 2 takes the next edge, whose latency is higher.
     runtime.createRequest({
@@ -1732,9 +1776,18 @@ describe("DefaultEventProcessor", () => {
 
     const second = runtime.eventQueue.dequeue();
 
-    expect(second?.type).toBe("request.routed");
+    expect(second?.type).toBe("network.transmission_started");
     expect(second?.targetNodeId).toBe("api-2");
-    expect(second?.timestampMs).toBe(20);
+    expect(second?.timestampMs).toBe(0);
+    expect(second?.payload?.latencyMs).toBe(20);
+
+    processor.process(second!);
+
+    const routedSecond = runtime.eventQueue.dequeue();
+
+    expect(routedSecond?.type).toBe("request.routed");
+    expect(routedSecond?.targetNodeId).toBe("api-2");
+    expect(routedSecond?.timestampMs).toBe(20);
   });
 
   it("should complete a request at a terminal node without invoking routing", () => {
@@ -1851,6 +1904,18 @@ describe("DefaultEventProcessor", () => {
 
     processor.process(createEvent("request.created", 0, "req-1", "lb"));
 
+    const transmission = runtime.eventQueue.dequeue();
+
+    expect(transmission).toMatchObject({
+      type: "network.transmission_started",
+      sourceNodeId: "lb",
+      targetNodeId: "api-2",
+      timestampMs: 0,
+      payload: { requestId: "req-1" },
+    });
+
+    processor.process(transmission!);
+
     const routed = runtime.eventQueue.dequeue();
 
     expect(routed).toMatchObject({
@@ -1904,6 +1969,18 @@ describe("DefaultEventProcessor", () => {
 
     processor.process(createEvent("request.created", 0, "req-1", "lb"));
 
+    const transmission = runtime.eventQueue.dequeue();
+
+    expect(transmission).toMatchObject({
+      type: "network.transmission_started",
+      sourceNodeId: "lb",
+      targetNodeId: "api-2",
+      timestampMs: 0,
+      payload: { requestId: "req-1" },
+    });
+
+    processor.process(transmission!);
+
     const routed = runtime.eventQueue.dequeue();
 
     expect(routed).toMatchObject({
@@ -1945,9 +2022,18 @@ describe("DefaultEventProcessor", () => {
 
       makeRequest(runtime, processor, "req-1", "lb");
 
-      const routed = runtime.eventQueue.dequeue();
+      const transmission = runtime.eventQueue.dequeue();
 
-      expect(routed).toMatchObject({
+      expect(transmission).toMatchObject({
+        type: "network.transmission_started",
+        sourceNodeId: "lb",
+        targetNodeId: "api",
+        timestampMs: 0,
+      });
+
+      processor.process(transmission!);
+
+      expect(runtime.eventQueue.dequeue()).toMatchObject({
         type: "request.routed",
         sourceNodeId: "lb",
         targetNodeId: "api",
@@ -1970,7 +2056,7 @@ describe("DefaultEventProcessor", () => {
       const routed = runtime.eventQueue.dequeue();
 
       expect(routed).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api",
       });
     });
@@ -1990,7 +2076,7 @@ describe("DefaultEventProcessor", () => {
       const routed = runtime.eventQueue.dequeue();
 
       expect(routed).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api",
       });
     });
@@ -2021,11 +2107,11 @@ describe("DefaultEventProcessor", () => {
       // The failed api-1 is never considered: round robin over a single
       // available candidate keeps sending to api-2.
       expect(first).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-2",
       });
       expect(second).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-2",
       });
     });
@@ -2083,11 +2169,17 @@ describe("DefaultEventProcessor", () => {
 
       processor.process(createEvent("component.recovered", 0, "req-1", "api"));
 
-      // After recovery the destination is routable again.
+      // After recovery the destination is routable again; the recovered
+      // candidate sends the transmission toward it.
       makeRequest(runtime, processor, "req-2", "lb");
 
-      expect(dequeueEventOfType(runtime, "request.routed")).toMatchObject({
-        type: "request.routed",
+      const transmission = dequeueEventOfType(
+        runtime,
+        "network.transmission_started",
+      );
+
+      expect(transmission).toMatchObject({
+        type: "network.transmission_started",
         targetNodeId: "api",
       });
     });
@@ -2142,11 +2234,11 @@ describe("DefaultEventProcessor", () => {
 
       // Cycle over [api-1, api-3] only: the failed api-2 is skipped.
       expect(first).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-1",
       });
       expect(second).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-3",
       });
     });
@@ -2176,7 +2268,7 @@ describe("DefaultEventProcessor", () => {
       makeRequest(runtime, processor, "req-1", "lb");
 
       expect(runtime.eventQueue.dequeue()).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-3",
       });
     });
@@ -2210,7 +2302,7 @@ describe("DefaultEventProcessor", () => {
       makeRequest(runtime, processor, "req-1", "lb");
 
       expect(runtime.eventQueue.dequeue()).toMatchObject({
-        type: "request.routed",
+        type: "network.transmission_started",
         targetNodeId: "api-3",
       });
     });
@@ -2349,6 +2441,16 @@ describe("error rate failure lifecycle", () => {
     });
 
     processor.process(completedProcessing!);
+
+    const transmission = dequeueEventOfType(
+      runtime,
+      "network.transmission_started",
+    );
+
+    expect(transmission?.type).toBe("network.transmission_started");
+    expect(transmission?.targetNodeId).toBe("database");
+
+    processor.process(transmission!);
 
     const routed = dequeueEventOfType(runtime, "request.routed");
 
@@ -2799,6 +2901,11 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
 
     expect(processed).toEqual([
       { type: "request.created", target: undefined, timestampMs: 0 },
+      {
+        type: "network.transmission_started",
+        target: "api",
+        timestampMs: 0,
+      },
       { type: "request.routed", target: "api", timestampMs: 10 },
       {
         type: "request.processing_started",
@@ -2808,6 +2915,11 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       {
         type: "request.processing_completed",
         target: undefined,
+        timestampMs: 25,
+      },
+      {
+        type: "network.transmission_started",
+        target: "database",
         timestampMs: 25,
       },
       { type: "request.routed", target: "database", timestampMs: 45 },
@@ -4926,5 +5038,597 @@ describe("database flow", () => {
     }
 
     expect(runtime.getRequest("req-4").status).toBe("completed");
+  });
+});
+
+describe("network flow", () => {
+  function networkGraph(
+    edgeConfig: ArchitectureEdge["config"],
+    clientConfig: ArchitectureNode["config"] = {},
+  ): ArchitectureGraph {
+    return {
+      nodes: [node("client", "client", clientConfig), node("api", "api")],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: edgeConfig,
+        },
+      ],
+    };
+  }
+
+  function createNetworkRequest(
+    runtime: SimulationRuntime,
+    requestId: string,
+    sizeBytes?: number,
+  ): void {
+    runtime.createRequest({
+      id: requestId,
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+      ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+    });
+  }
+
+  it("should deliver a request after latency plus a bandwidth-based transmission time", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 20, bandwidthMbps: 10, protocol: "http" }),
+    );
+
+    createNetworkRequest(runtime, "req-1", 1_000_000);
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const transmission = dequeueEventOfType(
+      runtime,
+      "network.transmission_started",
+    );
+
+    // The transmission surfaces the connection metadata for the network
+    // simulation context: size, latency, bandwidth and protocol.
+    expect(transmission).toMatchObject({
+      type: "network.transmission_started",
+      sourceNodeId: "client",
+      targetNodeId: "api",
+      timestampMs: 0,
+      payload: {
+        requestId: "req-1",
+        edgeId: "edge-1",
+        protocol: "http",
+        sizeBytes: 1_000_000,
+        latencyMs: 20,
+        bandwidthMbps: 10,
+      },
+    });
+
+    processor.process(transmission!);
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    // 20ms latency + (1,000,000 * 8) / (10 * 1,000,000) * 1000 = 800ms.
+    expect(routed?.timestampMs).toBe(820);
+    expect(routed?.sourceNodeId).toBe("client");
+    expect(routed?.targetNodeId).toBe("api");
+  });
+
+  it("should use the default request size when the request has no sizeBytes", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 0, bandwidthMbps: 10 }),
+    );
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const transmission = dequeueEventOfType(
+      runtime,
+      "network.transmission_started",
+    );
+
+    expect(transmission?.payload?.sizeBytes).toBe(DEFAULT_REQUEST_SIZE_BYTES);
+
+    processor.process(transmission!);
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    expect(routed?.timestampMs).toBeCloseTo(
+      getTransmissionTimeMs(DEFAULT_REQUEST_SIZE_BYTES, 10),
+      3,
+    );
+  });
+
+  it("should fail the request via network_packet_loss when a transmission is lost", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 30, packetLossRate: 1 }),
+    );
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    // Failure is detected once the latency window elapses.
+    expect(failed).toMatchObject({
+      type: "request.failed",
+      timestampMs: 30,
+      sourceNodeId: "client",
+      targetNodeId: "api",
+      payload: {
+        requestId: "req-1",
+        reason: "network_packet_loss",
+      },
+    });
+
+    processor.process(failed!);
+
+    const request = runtime.getRequest("req-1");
+
+    expect(request.status).toBe("failed");
+    expect(request.currentNodeId).toBe("client");
+
+    // The transmission never reached the destination, so it consumed no
+    // capacity and the destination processed nothing.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getComponent("api").processedRequests).toBe(0);
+  });
+
+  it("should fail a lost transmission when the source has no retry policy", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ packetLossRate: 1 }),
+    );
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const failed = runtime.eventQueue.dequeue();
+
+    // The default 10ms latency window elapses before the failure fires, and
+    // without a retry policy on the source the loss is terminal.
+    expect(failed).toMatchObject({
+      type: "request.failed",
+      timestampMs: 10,
+      payload: { reason: "network_packet_loss" },
+    });
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+  });
+
+  it("should retry a lost transmission using the source retry policy and succeed", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph(
+        { latencyMs: 10, packetLossRate: 0.5 },
+        { retryPolicy: { retries: 1, circuitBreaker: false } },
+      ),
+    );
+
+    // First roll loses the transmission, the retried roll delivers it.
+    vi.spyOn(runtime.random, "next")
+      .mockReturnValueOnce(0.1)
+      .mockReturnValueOnce(0.9);
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const retry = dequeueEventOfType(runtime, "request.retry");
+
+    expect(retry).toMatchObject({
+      type: "request.retry",
+      sourceNodeId: "client",
+      targetNodeId: "api",
+      timestampMs: 20,
+      payload: {
+        requestId: "req-1",
+        stage: "network",
+      },
+    });
+
+    processor.process(retry!);
+
+    // The lost transmission consumed the shared attempt budget.
+    expect(runtime.getRequest("req-1").attempts).toBe(1);
+
+    while (!runtime.eventQueue.isEmpty()) {
+      processor.process(runtime.eventQueue.dequeue()!);
+    }
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+  });
+
+  it("should fail permanently when network retries exhaust the retry budget", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph(
+        { latencyMs: 10, packetLossRate: 0.5 },
+        { retryPolicy: { retries: 1, circuitBreaker: false } },
+      ),
+    );
+
+    // Every roll loses the transmission.
+    vi.spyOn(runtime.random, "next").mockReturnValue(0.1);
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const failedReasons: string[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+
+      if (event.type === "request.failed") {
+        failedReasons.push(String(event.payload?.reason));
+      }
+
+      processor.process(event);
+    }
+
+    const request = runtime.getRequest("req-1");
+
+    expect(request.status).toBe("failed");
+    expect(request.attempts).toBe(2);
+    expect(failedReasons).toEqual(["network_packet_loss"]);
+  });
+
+  it("should not emit database events when a transmission to a database is lost", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [node("client", "client"), node("database", "database")],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "database",
+          config: { packetLossRate: 1 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed?.payload?.reason).toBe("network_packet_loss");
+
+    processor.process(failed!);
+
+    // The request never arrived, so the database observed nothing.
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(runtime.getComponent("database").processedRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("database")).toBe(0);
+  });
+
+  it("should produce deterministic transmission outcomes for the same seed", () => {
+    const graph = networkGraph({ latencyMs: 5, packetLossRate: 0.5 });
+
+    const run = () => {
+      const { runtime, processor } = createRuntime(graph, 7);
+      const outcomes: string[] = [];
+
+      ["a", "b", "c", "d", "e"].forEach((id) => {
+        createNetworkRequest(runtime, id);
+        processor.process(createEvent("request.created", 0, id, "client"));
+
+        while (!runtime.eventQueue.isEmpty()) {
+          processor.process(runtime.eventQueue.dequeue()!);
+        }
+
+        outcomes.push(runtime.getRequest(id).status);
+      });
+
+      return outcomes;
+    };
+
+    const runA = run();
+    const runB = run();
+
+    expect(runA).toEqual(runB);
+    expect(runA).toHaveLength(5);
+    for (const outcome of runA) {
+      expect(["completed", "failed"]).toContain(outcome);
+    }
+  });
+
+  it("should deliver exactly after the configured latency when no bandwidth is configured", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 30 }),
+    );
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    // No bandwidth configured means no transmission time is added on top of
+    // the configured 30ms latency.
+    expect(routed).toMatchObject({
+      type: "request.routed",
+      timestampMs: 30,
+      payload: { requestId: "req-1" },
+    });
+  });
+
+  it("should not add a bandwidth transmission delay for a zero-size payload", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 20, bandwidthMbps: 10 }),
+    );
+
+    createNetworkRequest(runtime, "req-1", 0);
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    expect(routed?.timestampMs).toBe(20);
+    expect(routed?.payload?.requestId).toBe("req-1");
+  });
+
+  it("should never lose a transmission when packetLossRate is 0", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 30, packetLossRate: 0 }),
+    );
+
+    const nextSpy = vi.spyOn(runtime.random, "next");
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    expect(routed?.timestampMs).toBe(30);
+    // A rate of 0 short-circuits without drawing from the shared PRNG stream.
+    expect(nextSpy).not.toHaveBeenCalled();
+  });
+
+  it("should decide packet loss from the SimulationRandom draw", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 10, packetLossRate: 0.5 }),
+    );
+
+    const nextSpy = vi
+      .spyOn(runtime.random, "next")
+      .mockReturnValueOnce(0.2)
+      .mockReturnValueOnce(0.8);
+
+    // Low roll (0.2) falls under the 0.5 loss rate → the transmission is lost.
+    createNetworkRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed?.payload?.reason).toBe("network_packet_loss");
+
+    processor.process(failed!);
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+
+    // High roll (0.8) clears the loss rate → the transmission is delivered.
+    createNetworkRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    expect(routed).toMatchObject({
+      type: "request.routed",
+      payload: { requestId: "req-2" },
+    });
+    expect(nextSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("should route through the routing strategy and transmit on the selected edge's config", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("gateway", "load_balancer", { routingStrategy: "round_robin" }),
+        node("api-1", "api"),
+        node("api-2", "api"),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "gateway",
+          target: "api-1",
+          config: { latencyMs: 0, bandwidthMbps: 10 },
+        },
+        {
+          id: "edge-2",
+          source: "gateway",
+          target: "api-2",
+          config: { latencyMs: 0, bandwidthMbps: 100 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    createNetworkRequest(runtime, "req-1", 1_000_000);
+    createNetworkRequest(runtime, "req-2", 1_000_000);
+
+    // Round-robin assigns req-1 to edge-1 and req-2 to edge-2.
+    processor.process(createEvent("request.created", 0, "req-1", "gateway"));
+    processor.process(createEvent("request.created", 0, "req-2", "gateway"));
+
+    const first = dequeueEventOfType(runtime, "network.transmission_started");
+    const second = dequeueEventOfType(runtime, "network.transmission_started");
+
+    expect(first).toMatchObject({
+      targetNodeId: "api-1",
+      payload: { edgeId: "edge-1", bandwidthMbps: 10 },
+    });
+    expect(second).toMatchObject({
+      targetNodeId: "api-2",
+      payload: { edgeId: "edge-2", bandwidthMbps: 100 },
+    });
+
+    processor.process(first!);
+    processor.process(second!);
+
+    // The queue delivers routed arrivals in timestamp order, so map the
+    // outcomes back to their requests. Each transmission is delivered with
+    // its own selected edge's bandwidth: req-1 over 10 Mbps = 800ms, req-2
+    // over 100 Mbps = 80ms.
+    const routedEvents = [
+      dequeueEventOfType(runtime, "request.routed"),
+      dequeueEventOfType(runtime, "request.routed"),
+    ];
+
+    const routedByRequest = new Map(
+      routedEvents.map((routed) => [
+        String(routed?.payload?.requestId),
+        routed?.timestampMs,
+      ]),
+    );
+
+    expect(routedByRequest.get("req-1")).toBe(800);
+    expect(routedByRequest.get("req-2")).toBe(80);
+  });
+
+  it("should not consume destination capacity while a transmission is in flight", () => {
+    const { runtime, processor } = createRuntime(
+      networkGraph({ latencyMs: 30 }),
+    );
+
+    createNetworkRequest(runtime, "req-1");
+
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    const routed = dequeueEventOfType(runtime, "request.routed");
+
+    expect(routed?.timestampMs).toBe(30);
+
+    // The transmission is delivered but the arrival has not fired yet: the
+    // request is still in transit, so the destination holds no capacity and
+    // has processed nothing.
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getComponent("api").processedRequests).toBe(0);
+    expect(runtime.getRequest("req-1").currentNodeId).toBe("client");
+
+    // Only once the arrival is processed does capacity accounting begin at the
+    // destination.
+    processor.process(routed!);
+
+    expect(runtime.getRequest("req-1").status).toBe("in-flight");
+    expect(runtime.getRequest("req-1").currentNodeId).toBe("api");
+
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    expect(runtime.getComponent("api").activeRequests).toBe(1);
+  });
+
+  it("should restore network runtime state and the deterministic random sequence on reset", () => {
+    const graph = networkGraph({ latencyMs: 10, packetLossRate: 0.5 });
+
+    const outcome = (
+      runtime: SimulationRuntime,
+      processor: DefaultEventProcessor,
+      id: string,
+    ): string => {
+      createNetworkRequest(runtime, id);
+      processor.process(createEvent("request.created", 0, id, "client"));
+      while (!runtime.eventQueue.isEmpty()) {
+        processor.process(runtime.eventQueue.dequeue()!);
+      }
+      return runtime.getRequest(id).status;
+    };
+
+    // A from-scratch run with seed 7 establishes the baseline outcome.
+    const { runtime: baselineRuntime, processor: baselineProcessor } =
+      createRuntime(graph, 7);
+    const baseline = outcome(baselineRuntime, baselineProcessor, "req-ref");
+
+    // First runtime: consume a packet-loss draw and leave a delivery pending,
+    // then queue a request at the destination component.
+    const { runtime, processor } = createRuntime(graph, 7);
+    const nextSpy = vi.spyOn(runtime.random, "next");
+
+    createNetworkRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+    runtime.enqueueRequest("api", "req-queued");
+
+    expect(nextSpy).toHaveBeenCalled();
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
+
+    runtime.reset();
+
+    // The reset clears the network runtime state and the PRNG stream is
+    // re-seeded, so replaying the same architecture and seed reproduces the
+    // baseline outcome.
+    expect(runtime.eventQueue.isEmpty()).toBe(true);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(() => runtime.getRequest("req-1")).toThrowError(
+      "Request not found req-1",
+    );
+
+    expect(outcome(runtime, processor, "req-2")).toBe(baseline);
+  });
+
+  it("should not use trafficRate as a second request-generation mechanism", () => {
+    const runCount = (graph: ArchitectureGraph): number => {
+      const { runtime, processor } = createRuntime(graph, 7);
+      new TrafficGenerator(runtime).generate("client");
+
+      let created = 0;
+
+      while (!runtime.eventQueue.isEmpty()) {
+        const event = runtime.eventQueue.dequeue()!;
+
+        if (event.type === "request.created") {
+          created += 1;
+        }
+
+        processor.process(event);
+      }
+
+      return created;
+    };
+
+    // With 10 requests/second over a 1000ms window, exactly 10 requests are
+    // generated regardless of the connection's trafficRate metadata.
+    expect(runCount(networkGraph({}))).toBe(10);
+    expect(runCount(networkGraph({ trafficRate: 10_000 }))).toBe(10);
   });
 });

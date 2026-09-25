@@ -141,6 +141,46 @@ export function getNetworkLatency(edge: ArchitectureEdge): number {
 }
 
 // ---------------------------------------------------------------------------
+// Network Transmission Time
+// ---------------------------------------------------------------------------
+
+/**
+ * Approximates the time (in milliseconds) it takes to push a payload of the
+ * given size across a connection with the given bandwidth.
+ *
+ * The MVP deliberately models a single continuous transmission instead of
+ * individual packets:
+ *
+ *   transmission time = (sizeBytes * 8) / (bandwidthMbps * 1,000,000)
+ *   in seconds, converted to milliseconds.
+ *
+ * @param sizeBytes    - The request payload size in bytes; a non-negative
+ *   integer.
+ * @param bandwidthMbps - The connection bandwidth in megabits per second; a
+ *   positive number.
+ * @throws {Error} If `sizeBytes` is not a non-negative integer or
+ *   `bandwidthMbps` is not positive.
+ */
+export function getTransmissionTimeMs(
+  sizeBytes: number,
+  bandwidthMbps: number,
+): number {
+  if (!Number.isInteger(sizeBytes) || sizeBytes < 0) {
+    throw new Error(
+      `Request size must be a non-negative integer of bytes. Received: ${sizeBytes}.`,
+    );
+  }
+
+  if (!(bandwidthMbps > 0)) {
+    throw new Error(
+      `Bandwidth must be a positive number of Mbps. Received: ${bandwidthMbps}.`,
+    );
+  }
+
+  return ((sizeBytes * 8) / (bandwidthMbps * 1_000_000)) * 1000;
+}
+
+// ---------------------------------------------------------------------------
 // Event Construction
 // ---------------------------------------------------------------------------
 

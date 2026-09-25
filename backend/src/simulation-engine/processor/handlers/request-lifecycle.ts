@@ -16,7 +16,10 @@ import {
   canRetry,
   shouldFail,
 } from "../../utils/helpers.js";
-import { DEFAULT_RETRY_DELAY_MS } from "../../utils/constants.js";
+import {
+  DEFAULT_REQUEST_SIZE_BYTES,
+  DEFAULT_RETRY_DELAY_MS,
+} from "../../utils/constants.js";
 import { getRequestId, scheduleHealthChanged } from "./event-handling.js";
 
 /** Handlers for the `request.*` event types. */
@@ -545,6 +548,15 @@ export class RequestLifecycleHandlers {
   handleRetry(event: SimulationEvent): void {
     const requestId = getRequestId(event);
 
+    // A network-level retry re-runs the routing from the transmitting node so
+    // a new transmission is attempted over the connection. Everything else
+    // re-attempts processing at the component that just failed.
+    if (event.payload?.stage === "network") {
+      this.routeRequest(event, event.sourceNodeId!);
+
+      return;
+    }
+
     this.runtime.schedule(
       createEvent({
         simulationId: event.simulationId,
@@ -567,11 +579,17 @@ export class RequestLifecycleHandlers {
    * Determines where a request should go next based on the outgoing
    * connections of its current component.
    *
+   * Routing answers only one question: which connection should the request
+   * use? The network transmission itself — how long delivery takes and whether
+   * it succeeds — is handled by the `network.transmission_started` handler, so
+   * latency and packet-loss behavior live with the network simulation rather
+   * than alongside the routing decision.
+   *
    * Routing rules for the current MVP:
    *
-   * 0 outgoing edges  → request.completed (no routing performed)
-   * >= 1 outgoing edge → select one via the runtime's routing strategy, then
-   *                      request.routed after that edge's network latency
+   * 0 outgoing edges → request.completed (no routing performed)
+   * >= 1 outgoing edge → select one via the runtime's routing strategy, then a
+   *                      network.transmission_started event for that edge
    */
 
   public routeRequest(event: SimulationEvent, sourceNodeId: string): void {
@@ -630,17 +648,30 @@ export class RequestLifecycleHandlers {
       );
     }
 
-    const networkLatencyMs = getNetworkLatency(selectedEdge);
+    const edge = selectedEdge;
+    const sizeBytes =
+      this.runtime.getRequest(requestId).sizeBytes ??
+      DEFAULT_REQUEST_SIZE_BYTES;
 
+    // Emit the network transmission for the chosen connection. The network
+    // handler simulates delivery (latency + bandwidth transmission time) and
+    // schedules the request.routed arrival — or failures the request when the
+    // transmission is lost. Routing and transmission remain separate.
     this.runtime.schedule(
       createEvent({
         simulationId: event.simulationId,
-        timestampMs: event.timestampMs + networkLatencyMs,
-        type: "request.routed",
-        sourceNodeId: selectedEdge.source,
-        targetNodeId: selectedEdge.target,
+        timestampMs: event.timestampMs,
+        type: "network.transmission_started",
+        sourceNodeId: edge.source,
+        targetNodeId: edge.target,
         payload: {
           requestId,
+          edgeId: edge.id,
+          protocol: edge.config.protocol,
+          sizeBytes,
+          latencyMs: getNetworkLatency(edge),
+          bandwidthMbps: edge.config.bandwidthMbps,
+          packetLossRate: edge.config.packetLossRate,
         },
       }),
     );

@@ -45,4 +45,11 @@ export interface SimulationRequest {
    * a database without one defaults to `"read"`.
    */
   databaseOperation?: DatabaseOperation;
+
+  /**
+   * The request payload size in bytes, used to approximate the time a network
+   * transmission takes over a bandwidth-limited connection. Defaults to
+   * `DEFAULT_REQUEST_SIZE_BYTES` when absent.
+   */
+  sizeBytes?: number;
 }
