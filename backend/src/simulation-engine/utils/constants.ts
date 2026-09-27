@@ -34,6 +34,16 @@ export const DEFAULT_REPLICAS = 1;
 export const DEFAULT_CONCURRENCY = 1;
 
 // ---------------------------------------------------------------------------
+// Circuit Breaker
+// ---------------------------------------------------------------------------
+
+/** Default consecutive retryable failures that trip a circuit open. */
+export const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 5;
+
+/** Default simulated time a circuit stays open before a half-open probe. */
+export const DEFAULT_CIRCUIT_OPEN_DURATION_MS = 5000;
+
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 

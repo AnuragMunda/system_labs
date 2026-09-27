@@ -32,6 +32,9 @@ export type SimulationEventType =
   | "component.health_changed"
   | "component.recovery_scheduled"
   | "component.scaled"
+  | "component.circuit_opened"
+  | "component.circuit_closed"
+  | "component.circuit_half_open"
   | "autoscaling.evaluate";
 
 /** A single timestamped event produced while running a simulation. */

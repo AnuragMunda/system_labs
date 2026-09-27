@@ -20,6 +20,7 @@ import { AutoscalingHandlers } from "./handlers/autoscaling.js";
 import { CacheHandlers } from "./handlers/cache-handling.js";
 import { DatabaseHandlers } from "./handlers/database-handling.js";
 import { NetworkHandlers } from "./handlers/network-handling.js";
+import { FailureHandler } from "./handlers/failure-handling.js";
 
 export class DefaultEventProcessor implements EventProcessor {
   private readonly requestHandlers: RequestLifecycleHandlers;
@@ -28,22 +29,27 @@ export class DefaultEventProcessor implements EventProcessor {
   private readonly cacheHandlers: CacheHandlers;
   private readonly databaseHandlers: DatabaseHandlers;
   private readonly networkHandlers: NetworkHandlers;
+  private readonly failureHandlers: FailureHandler;
 
   constructor(
     runtime: SimulationRuntime,
     autoscalingController: AutoscalingController,
     autoscalingScheduler: AutoscalingScheduler,
   ) {
-    this.requestHandlers = new RequestLifecycleHandlers(runtime);
+    this.failureHandlers = new FailureHandler(runtime);
+    this.requestHandlers = new RequestLifecycleHandlers(
+      runtime,
+      this.failureHandlers,
+    );
     this.componentHandlers = new ComponentLifecycleHandlers(runtime);
     this.autoscalingHandlers = new AutoscalingHandlers(
       runtime,
       autoscalingController,
       autoscalingScheduler,
     );
-    this.cacheHandlers = new CacheHandlers(runtime);
+    this.cacheHandlers = new CacheHandlers(runtime, this.failureHandlers);
     this.databaseHandlers = new DatabaseHandlers(runtime, this.requestHandlers);
-    this.networkHandlers = new NetworkHandlers(runtime);
+    this.networkHandlers = new NetworkHandlers(runtime, this.failureHandlers);
   }
 
   process(event: SimulationEvent): void {
@@ -94,6 +100,18 @@ export class DefaultEventProcessor implements EventProcessor {
 
       case "component.health_changed":
         this.componentHandlers.handleHealthChanged(event);
+        break;
+
+      case "component.circuit_opened":
+        this.componentHandlers.handleCircuitOpened(event);
+        break;
+
+      case "component.circuit_closed":
+        this.componentHandlers.handleCircuitClosed(event);
+        break;
+
+      case "component.circuit_half_open":
+        this.componentHandlers.handleCircuitHalfOpen(event);
         break;
 
       // component.recovery_scheduled is observability-only and intentionally

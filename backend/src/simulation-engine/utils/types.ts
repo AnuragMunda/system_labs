@@ -67,6 +67,50 @@ export interface ComponentRuntimeState {
   lastProcessingLatencyMs?: number; // Latency of the most recently completed request.
 
   recoveryGeneration: number; // Identifies the current failure/recovery cycle.
+
+  circuit: ComponentCircuitBreakerState;
+}
+
+/** The run state of a component's circuit breaker. */
+export type CircuitBreakerRunState = "closed" | "open" | "half-open";
+
+/**
+ * The mutable runtime state one component's circuit breaker maintains. Only
+ * meaningful when `enabled` is true; a disabled breaker always stays closed.
+ */
+export interface ComponentCircuitBreakerState {
+  enabled: boolean;
+  failureThreshold: number;
+  openDurationMs: number;
+
+  state: CircuitBreakerRunState;
+
+  /** Consecutive retryable failures feeding the trip decision. */
+  consecutiveFailures: number;
+
+  /** Simulation time the circuit was tripped open. */
+  openedAtMs?: number;
+
+  /** Identifies the current open/half-open cycle; invalidates stale timers. */
+  generation: number;
+
+  /** Whether a half-open probe request is currently in flight. */
+  probeInFlight: boolean;
+
+  /** The id of the request granted the half-open probe, when one is in flight. */
+  probeRequestId?: string;
+}
+
+/** Result of asking the runtime whether a request may be admitted at a component. */
+export type CircuitArrivalStatus = "open" | "probe-busy" | "admitted";
+
+/** The outcome of recording a retryable failure against a circuit. */
+export interface CircuitFailureRecord {
+  opened: boolean;
+  consecutiveFailures: number;
+  failureThreshold: number;
+  openedAtMs?: number;
+  generation: number;
 }
 
 /** The observables a component's health is derived from. */

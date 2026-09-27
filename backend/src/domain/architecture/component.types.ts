@@ -59,10 +59,45 @@ export interface AutoscalingConfig {
   targetCpu: number; // percentage 0-100
 }
 
+/**
+ * The classification of why a request failed. Retry logic decides how to
+ * treat a failure from this classification instead of parsing arbitrary reason
+ * strings.
+ */
+export type FailureKind =
+  | "component_failure"
+  | "network_packet_loss"
+  | "processing_error"
+  | "queue_overflow"
+  | "no_available_destination"
+  | "circuit_open";
+
 /** Retry/circuit-breaker policy for a component. */
 export interface RetryPolicy {
   retries: number;
-  circuitBreaker: boolean;
+  /**
+   * Circuit-breaker behavior. Accepts the structured configuration or a
+   * legacy boolean for backward compatibility. A legacy boolean is ignored —
+   * the breaker stays disabled unless an object explicitly enables it — so
+   * existing architectures keep their current behavior.
+   */
+  circuitBreaker?: CircuitBreakerConfig | boolean;
+}
+
+/**
+ * Circuit-breaker configuration for a component. The breaker only activates
+ * when `enabled` is true; a legacy boolean or an object without enabled:true
+ * leaves the circuit permanently closed.
+ */
+export interface CircuitBreakerConfig {
+  /** Enables the circuit breaker for the component. Defaults to false. */
+  enabled?: boolean;
+
+  /** Consecutive retryable failures that trip the circuit open. Defaults to 5. */
+  failureThreshold?: number;
+
+  /** Simulated time the circuit stays open before a half-open probe is scheduled. Defaults to 5000ms. */
+  openDurationMs?: number;
 }
 
 /** Runtime tuning knobs for a component, used during simulation. All fields are optional. */

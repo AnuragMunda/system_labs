@@ -163,6 +163,72 @@ export class ComponentLifecycleHandlers {
   }
 
   // ---------------------------------------------------------------------------
+  // component.circuit_opened
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Observes a circuit breaker opening.
+   *
+   * The circuit state is already tripped by the failure handler; this event
+   * exists to make the trip observable in the event stream.
+   */
+  handleCircuitOpened(event: SimulationEvent): void {
+    if (!event.sourceNodeId) {
+      throw new Error(
+        "component.circuit_opened event requires a sourceNodeId.",
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.circuit_closed
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Observes a circuit breaker closing after a half-open probe succeeds.
+   *
+   * The circuit state is already restored by the success path; this event
+   * exists to make the recovery observable in the event stream.
+   */
+  handleCircuitClosed(event: SimulationEvent): void {
+    if (!event.sourceNodeId) {
+      throw new Error(
+        "component.circuit_closed event requires a sourceNodeId.",
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // component.circuit_half_open
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Moves an open circuit into half-open once its open duration elapses.
+   *
+   * The transition is generation-guarded by the runtime, so a stale scheduled
+   * event from an earlier circuit generation is ignored.
+   */
+  handleCircuitHalfOpen(event: SimulationEvent): void {
+    const nodeId = event.sourceNodeId;
+
+    if (!nodeId) {
+      throw new Error(
+        "component.circuit_half_open event requires a sourceNodeId.",
+      );
+    }
+
+    const generation = event.payload?.generation;
+
+    if (typeof generation !== "number") {
+      throw new Error(
+        "component.circuit_half_open event requires a generation.",
+      );
+    }
+
+    this.runtime.transitionToHalfOpen(nodeId, generation);
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 

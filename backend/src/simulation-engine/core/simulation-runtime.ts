@@ -18,6 +18,9 @@ import { ComponentRequestQueue } from "../capacity/component-request-queue.js";
 import { createRoutingStrategy } from "../routing/routing-strategy.factory.js";
 import { ComponentHealthEvaluator } from "../components/health/component-health-evaluator.js";
 import {
+  CircuitArrivalStatus,
+  CircuitFailureRecord,
+  ComponentCircuitBreakerState,
   ComponentHealthStateChange,
   ComponentRuntimeState,
   QueueAdmissionResult,
@@ -25,11 +28,16 @@ import {
   RoutingStrategy,
 } from "../utils/types.js";
 import {
+  DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+  DEFAULT_CIRCUIT_OPEN_DURATION_MS,
   DEFAULT_CONCURRENCY,
   DEFAULT_HEALTH_THRESHOLDS,
   DEFAULT_REPLICAS,
 } from "../utils/constants.js";
-import { getEffectiveConcurrency } from "../utils/helpers.js";
+import {
+  getEffectiveConcurrency,
+  resolveCircuitBreakerConfig,
+} from "../utils/helpers.js";
 import { SimulationCache } from "../cache/simulation-cache.js";
 
 /**
@@ -297,6 +305,265 @@ export class SimulationRuntime {
     return this.getComponent(nodeId).recoveryGeneration;
   }
 
+  // ---------------------------------------------------------------------------
+  // CIRCUIT BREAKER
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the mutable circuit-breaker state for a component.
+   */
+  getCircuitState(nodeId: string): ComponentCircuitBreakerState {
+    return this.getComponent(nodeId).circuit;
+  }
+
+  /**
+   * Determines whether a request arriving at a component may proceed given the
+   * component's circuit state.
+   *
+   * @returns "open" - the circuit is open; the request must fail fast.
+   * @returns "probe-busy" - the circuit is half-open and another probe is in
+   *   flight; the request must fail fast.
+   * @returns "admitted" - the request may proceed (this includes the in-flight
+   *   probe itself and any request to a disabled/closed circuit).
+   */
+  admitArrival(nodeId: string, requestId: string): CircuitArrivalStatus {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return "admitted";
+    }
+
+    if (circuit.state === "open") {
+      return "open";
+    }
+
+    if (circuit.state === "half-open") {
+      if (circuit.probeInFlight && circuit.probeRequestId !== requestId) {
+        return "probe-busy";
+      }
+
+      if (!circuit.probeInFlight) {
+        this.updateComponent(nodeId, {
+          circuit: {
+            ...circuit,
+            probeInFlight: true,
+            probeRequestId: requestId,
+          },
+        });
+      }
+
+      return "admitted";
+    }
+
+    return "admitted";
+  }
+
+  /**
+   * Returns true when the component's circuit is currently open.
+   */
+  isCircuitOpen(nodeId: string): boolean {
+    return this.getCircuitState(nodeId).state === "open";
+  }
+
+  /**
+   * Returns whether a request may be routed toward the component from its
+   * circuit's perspective. A half-open circuit with a probe already in flight
+   * is not routable; all others (closed, disabled, or a free half-open) are.
+   */
+  isCircuitRoutable(nodeId: string): boolean {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return true;
+    }
+
+    return (
+      circuit.state === "closed" ||
+      (circuit.state === "half-open" && !circuit.probeInFlight)
+    );
+  }
+
+  /**
+   * Records a retryable failure against a component's circuit. When the
+   * consecutive failure count reaches the threshold the circuit opens and its
+   * generation increments (invalidating stale recovery timers).
+   *
+   * Returns `undefined` when the component has no enabled breaker; otherwise a
+   * {@link CircuitFailureRecord} describing whether the circuit just opened.
+   */
+  recordCircuitFailure(nodeId: string): CircuitFailureRecord | undefined {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return undefined;
+    }
+
+    if (circuit.state === "open") {
+      // A straggler failing while the circuit is already open must not
+      // disturb the trip or schedule duplicate recovery timers.
+      return {
+        opened: false,
+        consecutiveFailures: circuit.consecutiveFailures,
+        failureThreshold: circuit.failureThreshold,
+        generation: circuit.generation,
+      };
+    }
+
+    const consecutiveFailures = circuit.consecutiveFailures + 1;
+
+    if (consecutiveFailures < circuit.failureThreshold) {
+      this.updateComponent(nodeId, {
+        circuit: { ...circuit, consecutiveFailures },
+      });
+
+      return {
+        opened: false,
+        consecutiveFailures,
+        failureThreshold: circuit.failureThreshold,
+        generation: circuit.generation,
+      };
+    }
+
+    const openedAtMs = this.currentTimeMs;
+
+    this.updateComponent(nodeId, {
+      circuit: {
+        ...circuit,
+        state: "open",
+        consecutiveFailures,
+        openedAtMs,
+        generation: circuit.generation + 1,
+        probeInFlight: false,
+        probeRequestId: undefined,
+      },
+    });
+
+    return {
+      opened: true,
+      consecutiveFailures,
+      failureThreshold: circuit.failureThreshold,
+      openedAtMs,
+      generation: circuit.generation + 1,
+    };
+  }
+
+  /**
+   * Resets a component's consecutive failure count after a successful
+   * execution. A success while half-open closes the circuit (the half-open
+   * probe succeeded).
+   *
+   * @returns `true` when the success closed an open circuit.
+   */
+  resetCircuit(nodeId: string): boolean {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled || circuit.state === "open") {
+      return false;
+    }
+
+    if (circuit.state === "half-open") {
+      this.closeCircuit(nodeId);
+      return true;
+    }
+
+    if (circuit.consecutiveFailures === 0) {
+      return false;
+    }
+
+    this.updateComponent(nodeId, {
+      circuit: { ...circuit, consecutiveFailures: 0 },
+    });
+
+    return false;
+  }
+
+  /**
+   * Closes a component's circuit, clearing failure counts and any probe.
+   */
+  closeCircuit(nodeId: string): void {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return;
+    }
+
+    this.updateComponent(nodeId, {
+      circuit: {
+        ...circuit,
+        state: "closed",
+        consecutiveFailures: 0,
+        openedAtMs: undefined,
+        probeInFlight: false,
+        probeRequestId: undefined,
+      },
+    });
+  }
+
+  /**
+   * Returns whether the given request currently owns the component's half-open
+   * probe.
+   */
+  isCircuitProbe(nodeId: string, requestId: string): boolean {
+    const circuit = this.getCircuitState(nodeId);
+
+    return (
+      circuit.enabled &&
+      circuit.state === "half-open" &&
+      circuit.probeInFlight &&
+      circuit.probeRequestId === requestId
+    );
+  }
+
+  /**
+   * Releases an in-flight half-open probe without changing the circuit state.
+   * Used when a probe terminates while the circuit stays half-open.
+   */
+  releaseProbe(nodeId: string): void {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return;
+    }
+
+    this.updateComponent(nodeId, {
+      circuit: {
+        ...circuit,
+        probeInFlight: false,
+        probeRequestId: undefined,
+      },
+    });
+  }
+
+  /**
+   * Moves an open circuit to half-open, allowing a single probe request when
+   * the open duration elapses. The transition is generation-guarded so a stale
+   * scheduled event can never mutate a newer circuit cycle.
+   *
+   * @returns `true` when the transition happened; `false` when it was stale.
+   */
+  transitionToHalfOpen(nodeId: string, generation: number): boolean {
+    const circuit = this.getCircuitState(nodeId);
+
+    if (!circuit.enabled) {
+      return false;
+    }
+
+    if (circuit.state !== "open" || circuit.generation !== generation) {
+      return false;
+    }
+
+    this.updateComponent(nodeId, {
+      circuit: {
+        ...circuit,
+        state: "half-open",
+        probeInFlight: false,
+        probeRequestId: undefined,
+      },
+    });
+
+    return true;
+  }
+
   /**
    * Updates the current runtime replica count for a component.
    *
@@ -499,6 +766,9 @@ export class SimulationRuntime {
     for (const node of this.simulation.architectureSnapshot.nodes) {
       const replicas = node.config.replicas ?? DEFAULT_REPLICAS;
       const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
+      const circuitConfig = resolveCircuitBreakerConfig(
+        node.config.retryPolicy,
+      );
 
       this.components.set(node.id, {
         nodeId: node.id,
@@ -511,6 +781,17 @@ export class SimulationRuntime {
         replicas,
         effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
         recoveryGeneration: 0,
+        circuit: {
+          enabled: circuitConfig.enabled ?? false,
+          failureThreshold:
+            circuitConfig.failureThreshold ?? DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+          openDurationMs:
+            circuitConfig.openDurationMs ?? DEFAULT_CIRCUIT_OPEN_DURATION_MS,
+          state: "closed",
+          consecutiveFailures: 0,
+          generation: 0,
+          probeInFlight: false,
+        },
       });
     }
   }

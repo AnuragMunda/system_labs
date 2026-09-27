@@ -16,10 +16,14 @@ import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRuntime } from "../../core/simulation-runtime.js";
 import { createEvent } from "../../utils/helpers.js";
 import { getRequestId } from "./event-handling.js";
+import { FailureHandler } from "./failure-handling.js";
 
 /** Handlers for the `cache.*` event types. */
 export class CacheHandlers {
-  constructor(private readonly runtime: SimulationRuntime) {}
+  constructor(
+    private readonly runtime: SimulationRuntime,
+    private readonly failureHandlers: FailureHandler,
+  ) {}
 
   /**
    * Sends a request that missed the cache into the cache's normal processing
@@ -66,6 +70,9 @@ export class CacheHandlers {
    * Completes a request that hit the cache without consuming any processing
    * capacity: a hit is the cheap fast path, so it bypasses capacity, latency,
    * and processing-based health evaluation entirely.
+   *
+   * A hit is still a successful execution for the cache: it resets the
+   * component's circuit and closes it when the hit was the half-open probe.
    */
   handleCacheHit(event: SimulationEvent): void {
     const requestId = getRequestId(event);
@@ -85,6 +92,8 @@ export class CacheHandlers {
     this.runtime.updateRequest(requestId, {
       currentNodeId: event.sourceNodeId,
     });
+
+    this.failureHandlers.closeCircuit(event.sourceNodeId, event);
 
     this.runtime.schedule(
       createEvent({

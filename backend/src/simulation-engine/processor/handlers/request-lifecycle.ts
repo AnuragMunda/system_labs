@@ -13,18 +13,18 @@ import { SimulationRuntime } from "../../core/simulation-runtime.js";
 import {
   createEvent,
   getNetworkLatency,
-  canRetry,
   shouldFail,
 } from "../../utils/helpers.js";
-import {
-  DEFAULT_REQUEST_SIZE_BYTES,
-  DEFAULT_RETRY_DELAY_MS,
-} from "../../utils/constants.js";
+import { DEFAULT_REQUEST_SIZE_BYTES } from "../../utils/constants.js";
 import { getRequestId, scheduleHealthChanged } from "./event-handling.js";
+import { FailureHandler } from "./failure-handling.js";
 
 /** Handlers for the `request.*` event types. */
 export class RequestLifecycleHandlers {
-  constructor(private readonly runtime: SimulationRuntime) {}
+  constructor(
+    private readonly runtime: SimulationRuntime,
+    private readonly failureHandlers: FailureHandler,
+  ) {}
 
   // ---------------------------------------------------------------------------
   // request.created
@@ -63,6 +63,21 @@ export class RequestLifecycleHandlers {
 
     if (!event.targetNodeId) {
       throw new Error("request.routed event requires a targetNodeId.");
+    }
+
+    const arrival = this.runtime.admitArrival(event.targetNodeId, requestId);
+
+    // An open circuit (or a half-open circuit whose probe is already claimed)
+    // fails the arriving request fast: no capacity, no queueing, no retry.
+    if (arrival === "open" || arrival === "probe-busy") {
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: event.targetNodeId,
+        reason: "circuit_open",
+      });
+
+      return;
     }
 
     this.runtime.updateRequest(requestId, {
@@ -115,28 +130,39 @@ export class RequestLifecycleHandlers {
       throw new Error(`Node not found: ${event.sourceNodeId}`);
     }
 
-    // 2. Check component health
-    const component = this.runtime.getComponent(event.sourceNodeId);
+    // 2. Check the circuit breaker. An open circuit (or a half-open circuit
+    // whose probe slot is already claimed by another request) fails the
+    // request fast — no capacity, no queueing, no attempt/retry budget.
+    const arrival = this.runtime.admitArrival(event.sourceNodeId, requestId);
 
-    // Component cannot process requests when failed.
-    if (component.health === "failed") {
-      this.runtime.schedule(
-        createEvent({
-          simulationId: event.simulationId,
-          timestampMs: event.timestampMs,
-          type: "request.failed",
-          sourceNodeId: event.sourceNodeId,
-          payload: {
-            requestId,
-            reason: "component_failed",
-          },
-        }),
-      );
+    if (arrival === "open" || arrival === "probe-busy") {
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: event.sourceNodeId,
+        reason: "circuit_open",
+      });
 
       return;
     }
 
-    // 3. Admit to the component queue when there is no remaining capacity.
+    // 3. Check component health
+    const component = this.runtime.getComponent(event.sourceNodeId);
+
+    // Component cannot process requests when failed.
+    if (component.health === "failed") {
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: event.sourceNodeId,
+        reason: "component_failed",
+        probeNodeId: event.sourceNodeId,
+      });
+
+      return;
+    }
+
+    // 4. Admit to the component queue when there is no remaining capacity.
     //
     //    Admission is delegated to the runtime, which applies the component's
     //    `queue` configuration:
@@ -173,43 +199,33 @@ export class RequestLifecycleHandlers {
         );
 
         if (admission.droppedRequestId) {
-          this.runtime.schedule(
-            createEvent({
-              simulationId: event.simulationId,
-              timestampMs: event.timestampMs,
-              type: "request.failed",
-              sourceNodeId: event.sourceNodeId,
-              payload: {
-                requestId: admission.droppedRequestId,
-                reason: "queue_overflow",
-              },
-            }),
-          );
+          this.failureHandlers.scheduleTerminalFailure({
+            event,
+            requestId: admission.droppedRequestId,
+            sourceNodeId: event.sourceNodeId,
+            reason: "queue_overflow",
+            probeNodeId: event.sourceNodeId,
+          });
         }
 
         return;
       }
 
-      this.runtime.schedule(
-        createEvent({
-          simulationId: event.simulationId,
-          timestampMs: event.timestampMs,
-          type: "request.failed",
-          sourceNodeId: event.sourceNodeId,
-          payload: {
-            requestId,
-            reason:
-              admission.reason === "queue_full"
-                ? "queue_overflow"
-                : "queue_disabled",
-          },
-        }),
-      );
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: event.sourceNodeId,
+        reason:
+          admission.reason === "queue_full"
+            ? "queue_overflow"
+            : "queue_disabled",
+        probeNodeId: event.sourceNodeId,
+      });
 
       return;
     }
 
-    // 4. Increment attempt
+    // 5. Increment attempt
     const currentAttempt = request.attempts + 1;
 
     this.runtime.updateRequest(requestId, {
@@ -221,55 +237,34 @@ export class RequestLifecycleHandlers {
     // Feed the health evaluator with the attempt; failures are counted too.
     this.runtime.recordProcessingAttempt(event.sourceNodeId);
 
-    // 5. Evaluate error rate
+    // 6. Evaluate error rate
     const errorRate = node.config.errorRate ?? 0;
 
     const failed = shouldFail(errorRate, this.runtime.random.next());
 
-    // 6. If error → retry/fail
+    // 7. If error → retry/fail
     if (failed) {
       this.runtime.recordProcessingFailure(event.sourceNodeId);
 
-      const retryPolicy = node.config.retryPolicy;
-      const maxRetries = retryPolicy?.retries;
-
-      const retryAllowed = canRetry(currentAttempt, maxRetries ?? 0);
-
-      if (retryAllowed) {
-        this.runtime.schedule(
-          createEvent({
-            simulationId: event.simulationId,
-            timestampMs: event.timestampMs + DEFAULT_RETRY_DELAY_MS,
-            type: "request.retry",
-            sourceNodeId: node.id,
-            targetNodeId: node.id,
-            payload: {
-              requestId,
-            },
-          }),
-        );
-
-        return;
-      }
-
-      this.runtime.schedule(
-        createEvent({
-          simulationId: event.simulationId,
-          timestampMs: event.timestampMs,
-          type: "request.failed",
-          sourceNodeId: node.id,
-          targetNodeId: node.id,
-          payload: {
-            requestId,
-            reason: "component_error",
-          },
-        }),
-      );
+      this.failureHandlers.handleRetryableFailure({
+        event,
+        requestId,
+        targetNodeId: node.id,
+        retryNodeId: node.id,
+        currentAttempt,
+        kind: "processing_error",
+        failureAtMs: event.timestampMs,
+      });
 
       return;
     }
 
-    // 7. Otherwise increment activeRequests
+    // A successful attempt resets the component's consecutive circuit
+    // failures (and closes the circuit when the success was the half-open
+    // probe).
+    this.failureHandlers.closeCircuit(event.sourceNodeId, event);
+
+    // 8. Otherwise increment activeRequests
     this.runtime.incrementActiveRequests(event.sourceNodeId);
 
     // A started request may push utilization (or observed error/latency) over a
@@ -295,7 +290,7 @@ export class RequestLifecycleHandlers {
     // the completion event too.
     const cacheMiss = request.cacheMiss === true;
 
-    // 8. Schedule processing_completed; the start timestamp lets the completion
+    // 9. Schedule processing_completed; the start timestamp lets the completion
     // handler compute the request's actual processing latency.
     this.runtime.schedule(
       createEvent({
@@ -612,12 +607,20 @@ export class RequestLifecycleHandlers {
       return;
     }
 
-    const availableEdges = edges.filter((edge) =>
-      this.runtime.isNodeAvailable(edge.target),
+    // A destination is only a candidate when it is health-available AND its
+    // circuit is routable (closed, or half-open with a free probe slot).
+    const availableEdges = edges.filter(
+      (edge) =>
+        this.runtime.isNodeAvailable(edge.target) &&
+        this.runtime.isCircuitRoutable(edge.target),
     );
 
     // Every destination is currently unavailable.
     if (availableEdges.length === 0) {
+      const circuitBlocked = edges.some(
+        (edge) => !this.runtime.isCircuitRoutable(edge.target),
+      );
+
       this.runtime.schedule(
         createEvent({
           simulationId: event.simulationId,
@@ -626,7 +629,9 @@ export class RequestLifecycleHandlers {
           sourceNodeId,
           payload: {
             requestId,
-            reason: "no_available_destination",
+            reason: circuitBlocked
+              ? "circuit_open"
+              : "no_available_destination",
           },
         }),
       );
@@ -719,18 +724,13 @@ export class RequestLifecycleHandlers {
     const component = this.runtime.getComponent(nodeId);
 
     if (component.health === "failed") {
-      this.runtime.schedule(
-        createEvent({
-          simulationId: event.simulationId,
-          timestampMs: event.timestampMs,
-          type: "request.failed",
-          sourceNodeId: nodeId,
-          payload: {
-            requestId,
-            reason: "component_failed",
-          },
-        }),
-      );
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: nodeId,
+        reason: "component_failed",
+        probeNodeId: nodeId,
+      });
 
       return;
     }

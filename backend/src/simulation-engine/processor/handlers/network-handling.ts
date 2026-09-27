@@ -21,21 +21,21 @@ import type { SimulationEvent } from "@/domain/simulation/event.types.js";
 
 import { SimulationRuntime } from "../../core/simulation-runtime.js";
 import {
-  canRetry,
   createEvent,
   getNetworkLatency,
   getTransmissionTimeMs,
   shouldFail,
 } from "../../utils/helpers.js";
-import {
-  DEFAULT_REQUEST_SIZE_BYTES,
-  DEFAULT_RETRY_DELAY_MS,
-} from "../../utils/constants.js";
+import { DEFAULT_REQUEST_SIZE_BYTES } from "../../utils/constants.js";
 import { getRequestId } from "./event-handling.js";
+import { FailureHandler } from "./failure-handling.js";
 
 /** Handlers for the `network.*` event types. */
 export class NetworkHandlers {
-  constructor(private readonly runtime: SimulationRuntime) {}
+  constructor(
+    private readonly runtime: SimulationRuntime,
+    private readonly failureHandlers: FailureHandler,
+  ) {}
 
   /**
    * Simulates the transmission of a request across the connection selected by
@@ -134,11 +134,11 @@ export class NetworkHandlers {
   }
 
   /**
-   * Handles a lost transmission through the existing request failure/retry
-   * system.
+   * Handles a lost transmission through the shared retry/failure system.
    *
-   * The loss consumes the request's shared attempt budget and is governed by
-   * the transmitting node's `retryPolicy`. When retries remain, a
+   * The loss consumes the request's shared attempt budget, is recorded against
+   * the destination's circuit, and is governed by the transmitting node's
+   * `retryPolicy` (the connection's owner). When retries remain, a
    * `request.retry` (stage `"network"`) is scheduled so routing re-runs and a
    * fresh transmission is attempted; otherwise the request fails permanently
    * with reason `network_packet_loss`. Failure of a lost transmission is
@@ -155,48 +155,15 @@ export class NetworkHandlers {
 
     this.runtime.updateRequest(requestId, { attempts: currentAttempt });
 
-    const sourceNode = this.runtime.topology.getNode(event.sourceNodeId!);
-
-    if (!sourceNode) {
-      throw new Error(`Node not found: ${event.sourceNodeId}`);
-    }
-
-    const retryPolicy = sourceNode.config.retryPolicy;
-
-    const retryAllowed = canRetry(currentAttempt, retryPolicy?.retries ?? 0);
-
-    const failedAtMs = event.timestampMs + latencyMs;
-
-    if (retryAllowed) {
-      this.runtime.schedule(
-        createEvent({
-          simulationId: event.simulationId,
-          timestampMs: failedAtMs + DEFAULT_RETRY_DELAY_MS,
-          type: "request.retry",
-          sourceNodeId: edge.source,
-          targetNodeId: edge.target,
-          payload: {
-            requestId,
-            stage: "network",
-          },
-        }),
-      );
-
-      return;
-    }
-
-    this.runtime.schedule(
-      createEvent({
-        simulationId: event.simulationId,
-        timestampMs: failedAtMs,
-        type: "request.failed",
-        sourceNodeId: edge.source,
-        targetNodeId: edge.target,
-        payload: {
-          requestId,
-          reason: "network_packet_loss",
-        },
-      }),
-    );
+    this.failureHandlers.handleRetryableFailure({
+      event,
+      requestId,
+      targetNodeId: edge.target,
+      retryNodeId: edge.source,
+      currentAttempt,
+      kind: "network_packet_loss",
+      failureAtMs: event.timestampMs + latencyMs,
+      stage: "network",
+    });
   }
 }

@@ -5632,3 +5632,1182 @@ describe("network flow", () => {
     expect(runCount(networkGraph({ trafficRate: 10_000 }))).toBe(10);
   });
 });
+
+describe("circuit breaker", () => {
+  function circuitGraph(
+    apiConfig: ArchitectureNode["config"],
+    latencyMs: number = 0,
+  ): ArchitectureGraph {
+    return {
+      nodes: [node("client", "client"), node("api", "api", apiConfig)],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs },
+        },
+      ],
+    };
+  }
+
+  function createClientRequest(
+    runtime: SimulationRuntime,
+    requestId: string,
+  ): void {
+    runtime.createRequest({
+      id: requestId,
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+      currentNodeId: "client",
+    });
+  }
+
+  /** Processes every queued event, returning them in processing order. */
+  function drain(
+    runtime: SimulationRuntime,
+    processor: DefaultEventProcessor,
+  ): SimulationEvent[] {
+    const processed: SimulationEvent[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      const event = runtime.eventQueue.dequeue()!;
+      processed.push(event);
+      processor.process(event);
+    }
+
+    return processed;
+  }
+
+  /**
+   * Processes queued events up to (but not including) the first event of the
+   * stop type, leaving it queued. Used to observe the open window before the
+   * auto-scheduled half-open transition fires.
+   */
+  function drainUntil(
+    runtime: SimulationRuntime,
+    processor: DefaultEventProcessor,
+    stopAtType: SimulationEvent["type"],
+  ): SimulationEvent[] {
+    const processed: SimulationEvent[] = [];
+
+    while (!runtime.eventQueue.isEmpty()) {
+      if (runtime.eventQueue.peek()?.type === stopAtType) {
+        break;
+      }
+
+      const event = runtime.eventQueue.dequeue()!;
+      processed.push(event);
+      processor.process(event);
+    }
+
+    return processed;
+  }
+
+  it("opens the circuit after the configured consecutive failures and schedules a half-open transition", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 10,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 5,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const opened = events.find((e) => e.type === "component.circuit_opened");
+
+    expect(opened).toMatchObject({
+      sourceNodeId: "api",
+      payload: {
+        failureCount: 5,
+        threshold: 5,
+        generation: 1,
+      },
+    });
+
+    expect(typeof opened?.payload?.openedAtMs).toBe("number");
+
+    // The half-open transition is scheduled, not yet fired.
+    const halfOpen = runtime.eventQueue.peek();
+
+    expect(halfOpen).toMatchObject({
+      type: "component.circuit_half_open",
+      sourceNodeId: "api",
+      timestampMs: (opened?.payload?.openedAtMs as number) + 1000,
+      payload: { generation: 1 },
+    });
+
+    expect(runtime.getCircuitState("api").state).toBe("open");
+  });
+
+  it("resets the consecutive failure count on success so only a run of failures trips the breaker", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 0.5,
+      retryPolicy: {
+        retries: 5,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 3,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    const nextSpy = vi.spyOn(runtime.random, "next");
+
+    // Three requests each fail twice (a draw below the 0.5 rate) and then
+    // succeed (a draw above it); the consecutive counter is reset before it
+    // ever reaches the threshold of 3.
+    for (let i = 0; i < 3; i += 1) {
+      nextSpy
+        .mockReturnValueOnce(0.2) // failure
+        .mockReturnValueOnce(0.2) // failure
+        .mockReturnValueOnce(0.8); // success (resets the counter)
+    }
+
+    for (let i = 1; i <= 3; i += 1) {
+      const id = `req-${i}`;
+      createClientRequest(runtime, id);
+      processor.process(createEvent("request.created", 0, id, "client"));
+    }
+
+    drain(runtime, processor);
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+    });
+  });
+
+  it("trips the breaker after consecutive failures once successes stop", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 0.5,
+      retryPolicy: {
+        retries: 5,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 3,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    vi.spyOn(runtime.random, "next").mockImplementation(() => 0.2);
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const opened = events.find((e) => e.type === "component.circuit_opened");
+
+    expect(opened?.payload).toMatchObject({ failureCount: 3, threshold: 3 });
+    expect(runtime.getCircuitState("api").state).toBe("open");
+  });
+
+  it("fails new requests fast while the circuit is open, without attempts, capacity, queueing, or retries", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 2,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    drainUntil(runtime, processor, "component.circuit_half_open");
+
+    expect(runtime.getCircuitState("api").state).toBe("open");
+
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const failed = events.find(
+      (e) => e.type === "request.failed" && e.payload?.requestId === "req-2",
+    );
+
+    expect(failed?.payload?.reason).toBe("circuit_open");
+
+    const request = runtime.getRequest("req-2");
+
+    expect(request.attempts).toBe(0);
+    expect(runtime.getComponent("api").activeRequests).toBe(0);
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+    expect(
+      events.some(
+        (e) => e.type === "request.retry" && e.payload?.requestId === "req-2",
+      ),
+    ).toBe(false);
+  });
+
+  it("moves an open circuit to half-open via its scheduled event, ignoring stale generations", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 2,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    // The request itself fails fast at the processing gate once the circuit
+    // opens under it (the retry re-enters processing after the trip).
+    expect(
+      events.some(
+        (e) =>
+          e.type === "request.failed" &&
+          e.payload?.requestId === "req-1" &&
+          e.payload?.reason === "circuit_open",
+      ),
+    ).toBe(true);
+
+    const halfOpenEvent = runtime.eventQueue.dequeue();
+
+    expect(runtime.getCircuitState("api").state).toBe("open");
+
+    // A stale event from an older generation must not transition the circuit.
+    processor.process({
+      id: "stale-half-open",
+      simulationId: "simulation-1",
+      timestampMs: 999,
+      type: "component.circuit_half_open",
+      sourceNodeId: "api",
+      payload: { generation: 99 },
+    });
+
+    expect(runtime.getCircuitState("api").state).toBe("open");
+
+    processor.process(halfOpenEvent!);
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "half-open",
+      probeInFlight: false,
+    });
+  });
+
+  it("admits a single probe while half-open and rejects other arrivals until it succeeds", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 0,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config, 10));
+
+    // Trip the circuit with two retryable failures, then advance to half-open.
+    runtime.recordCircuitFailure("api");
+    runtime.recordCircuitFailure("api");
+
+    processor.process({
+      id: "half-open",
+      simulationId: "simulation-1",
+      timestampMs: 1000,
+      type: "component.circuit_half_open",
+      sourceNodeId: "api",
+      payload: { generation: runtime.getCircuitState("api").generation },
+    });
+
+    expect(runtime.getCircuitState("api").state).toBe("half-open");
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    const events = drain(runtime, processor);
+
+    // req-1 is granted the probe and succeeds, closing the circuit; req-2
+    // arrives while the probe is in flight and is rejected fast.
+    const rejected = events.find(
+      (e) => e.type === "request.failed" && e.payload?.requestId === "req-2",
+    );
+
+    expect(rejected?.payload?.reason).toBe("circuit_open");
+    expect(runtime.getRequest("req-2").attempts).toBe(0);
+
+    expect(events.some((e) => e.type === "component.circuit_closed")).toBe(
+      true,
+    );
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+      probeInFlight: false,
+    });
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+  });
+
+  it("re-opens the circuit when the half-open probe fails, starting a new generation", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config, 10));
+
+    // Two failing requests trip the circuit (threshold 2).
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    drainUntil(runtime, processor, "component.circuit_half_open");
+
+    expect(runtime.getCircuitState("api").state).toBe("open");
+
+    // Advance into half-open via the scheduled event.
+    const firstHalfOpen = runtime.eventQueue.dequeue();
+
+    processor.process(firstHalfOpen!);
+
+    expect(runtime.getCircuitState("api").state).toBe("half-open");
+
+    // The next request is the probe and fails (errorRate 1, no retries),
+    // which re-opens the circuit on a new generation.
+    createClientRequest(runtime, "req-3");
+    processor.process(createEvent("request.created", 0, "req-3", "client"));
+
+    const after = drain(runtime, processor);
+
+    const secondOpened = after.find(
+      (e) => e.type === "component.circuit_opened",
+    );
+
+    expect(secondOpened?.payload).toMatchObject({
+      failureCount: 3,
+      threshold: 2,
+      generation: 2,
+    });
+
+    const secondHalfOpen = after.find(
+      (e) => e.type === "component.circuit_half_open",
+    );
+
+    expect(secondHalfOpen?.payload).toMatchObject({ generation: 2 });
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      generation: 2,
+      probeInFlight: false,
+    });
+  });
+
+  it("records network packet loss against the destination's circuit", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api", {
+          retryPolicy: {
+            retries: 0,
+            circuitBreaker: {
+              enabled: true,
+              failureThreshold: 2,
+              openDurationMs: 1000,
+            },
+          },
+        }),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 0, packetLossRate: 1 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const opened = events.find((e) => e.type === "component.circuit_opened");
+
+    expect(opened?.payload).toMatchObject({ failureCount: 2, threshold: 2 });
+    expect(runtime.getCircuitState("api").state).toBe("open");
+
+    const losses = events.filter(
+      (e) =>
+        e.type === "request.failed" &&
+        e.payload?.reason === "network_packet_loss",
+    );
+
+    expect(losses).toHaveLength(2);
+  });
+
+  it("routes around an open target and fails with circuit_open when every candidate is blocked", () => {
+    const apiConfig: ArchitectureNode["config"] = {
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("gateway", "load_balancer", { routingStrategy: "round_robin" }),
+        node("api-1", "api", apiConfig),
+        node("api-2", "api", apiConfig),
+      ],
+      edges: [
+        {
+          id: "e1",
+          source: "gateway",
+          target: "api-1",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "e2",
+          source: "gateway",
+          target: "api-2",
+          config: { latencyMs: 0 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    const createGatewayRequest = (requestId: string): void => {
+      runtime.createRequest({
+        id: requestId,
+        status: "pending",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "gateway",
+      });
+    };
+
+    // Open api-1's circuit (the same consecutive-failure transition the
+    // failure handler produces through normal processing).
+    runtime.recordCircuitFailure("api-1");
+    runtime.recordCircuitFailure("api-1");
+
+    createGatewayRequest("req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "gateway"));
+
+    const routed = dequeueEventOfType(runtime, "network.transmission_started");
+
+    expect(routed?.targetNodeId).toBe("api-2");
+
+    // Open api-2 too; the request now fails at routing with circuit_open.
+    runtime.recordCircuitFailure("api-2");
+    runtime.recordCircuitFailure("api-2");
+
+    createGatewayRequest("req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "gateway"));
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed?.payload?.reason).toBe("circuit_open");
+  });
+
+  it("fails requests terminally at a failed component without touching the circuit", () => {
+    const config: ArchitectureNode["config"] = {
+      retryPolicy: {
+        retries: 3,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 3,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config, 30));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    // The transmission is dispatched, then the component fails while the
+    // request is in transit (the arrival races the failure).
+    processor.process(
+      dequeueEventOfType(runtime, "network.transmission_started")!,
+    );
+
+    runtime.setComponentHealth("api", "failed");
+
+    processor.process(dequeueEventOfType(runtime, "request.routed")!);
+    processor.process(
+      dequeueEventOfType(runtime, "request.processing_started")!,
+    );
+
+    const failed = dequeueEventOfType(runtime, "request.failed");
+
+    expect(failed?.payload?.reason).toBe("component_failed");
+
+    // A health failure is terminal and feeds nothing into the circuit.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+    });
+  });
+
+  it("ignores a legacy boolean circuitBreaker and keeps the circuit permanently closed", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: { retries: 5, circuitBreaker: true },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drain(runtime, processor);
+
+    expect(runtime.getCircuitState("api").enabled).toBe(false);
+    expect(runtime.getCircuitState("api").state).toBe("closed");
+
+    expect(
+      events.some(
+        (e) =>
+          e.type === "component.circuit_opened" ||
+          e.type === "component.circuit_half_open" ||
+          e.type === "component.circuit_closed",
+      ),
+    ).toBe(false);
+
+    // The request still fails through the ordinary error path (no circuit).
+    expect(
+      events.some(
+        (e) =>
+          e.type === "request.failed" &&
+          e.payload?.reason === "component_error",
+      ),
+    ).toBe(true);
+  });
+
+  it("restores circuit state and same-seed determinism on reset", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const scenario = (
+      runtime: SimulationRuntime,
+      processor: DefaultEventProcessor,
+    ): string[] => {
+      createClientRequest(runtime, "req-a");
+      processor.process(createEvent("request.created", 0, "req-a", "client"));
+      createClientRequest(runtime, "req-b");
+      processor.process(createEvent("request.created", 0, "req-b", "client"));
+
+      const signatures: string[] = [];
+
+      while (!runtime.eventQueue.isEmpty()) {
+        const event = runtime.eventQueue.dequeue()!;
+
+        if (event.type === "component.circuit_opened") {
+          signatures.push(
+            JSON.stringify({
+              failureCount: event.payload?.failureCount,
+              threshold: event.payload?.threshold,
+              generation: event.payload?.generation,
+            }),
+          );
+        }
+
+        processor.process(event);
+      }
+
+      return signatures;
+    };
+
+    // Baseline outcome with seed 7.
+    const baselineRun = createRuntime(circuitGraph(config), 7);
+    const baseline = scenario(baselineRun.runtime, baselineRun.processor);
+
+    const { runtime, processor } = createRuntime(circuitGraph(config), 7);
+
+    // A from-scratch run reproduces the baseline. The circuit opens and then
+    // auto-advances to half-open once the open duration elapses, so both runs
+    // agree on the terminal half-open state.
+    expect(scenario(runtime, processor)).toEqual(baseline);
+    expect(runtime.getCircuitState("api").state).toBe("half-open");
+
+    // Reset restores the circuit to its initial state.
+    runtime.reset();
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      enabled: true,
+      state: "closed",
+      consecutiveFailures: 0,
+      generation: 0,
+      probeInFlight: false,
+    });
+
+    // Replaying after the reset reproduces the baseline outcome.
+    expect(scenario(runtime, processor)).toEqual(baseline);
+  });
+
+  it("starts an enabled circuit closed with a clean failure counter", () => {
+    const config: ArchitectureNode["config"] = {
+      retryPolicy: {
+        retries: 2,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 5,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime } = createRuntime(circuitGraph(config));
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      enabled: true,
+      state: "closed",
+      consecutiveFailures: 0,
+      failureThreshold: 5,
+      openDurationMs: 1000,
+      generation: 0,
+      probeInFlight: false,
+    });
+  });
+
+  it("a disabled circuit breaker leaves failure handling unchanged", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 2,
+        circuitBreaker: {
+          enabled: false,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drain(runtime, processor);
+
+    // No circuit machinery runs.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      enabled: false,
+      state: "closed",
+      consecutiveFailures: 0,
+    });
+
+    expect(
+      events.some(
+        (e) =>
+          e.type === "component.circuit_opened" ||
+          e.type === "component.circuit_half_open" ||
+          e.type === "component.circuit_closed",
+      ),
+    ).toBe(false);
+
+    // Ordinary retry and terminal behavior is preserved: three attempts, two
+    // retries, then an exhausted retry budget.
+    expect(
+      events.filter(
+        (e) => e.type === "request.retry" && e.payload?.requestId === "req-1",
+      ),
+    ).toHaveLength(2);
+
+    expect(runtime.getRequest("req-1").attempts).toBe(3);
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+
+    const failed = events.find(
+      (e) => e.type === "request.failed" && e.payload?.requestId === "req-1",
+    );
+
+    expect(failed?.payload?.reason).toBe("component_error");
+  });
+
+  it("increments the consecutive failure counter on a retryable failure without opening", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 5,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drain(runtime, processor);
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 1,
+    });
+
+    expect(events.some((e) => e.type === "component.circuit_opened")).toBe(
+      false,
+    );
+  });
+
+  it("the circuit stays closed below the threshold and opens exactly at it", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 3,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    for (const requestId of ["req-1", "req-2"]) {
+      createClientRequest(runtime, requestId);
+      processor.process(createEvent("request.created", 0, requestId, "client"));
+      drainUntil(runtime, processor, "component.circuit_half_open");
+    }
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 2,
+    });
+
+    createClientRequest(runtime, "req-3");
+    processor.process(createEvent("request.created", 0, "req-3", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const opened = events.find((e) => e.type === "component.circuit_opened");
+
+    expect(opened?.payload).toMatchObject({ failureCount: 3, threshold: 3 });
+    expect(runtime.getCircuitState("api").state).toBe("open");
+  });
+
+  it("database operation failures trip the database node's circuit", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "client"),
+        node("api", "api"),
+        node("database", "database", {
+          latencyMs: 5,
+          errorRate: 1,
+          retryPolicy: {
+            retries: 0,
+            circuitBreaker: {
+              enabled: true,
+              failureThreshold: 2,
+              openDurationMs: 1000,
+            },
+          },
+        }),
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "client",
+          target: "api",
+          config: { latencyMs: 0 },
+        },
+        {
+          id: "edge-2",
+          source: "api",
+          target: "database",
+          config: { latencyMs: 0 },
+        },
+      ],
+    };
+
+    const { runtime, processor } = createRuntime(graph);
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    const opened = events.find((e) => e.type === "component.circuit_opened");
+
+    expect(opened?.sourceNodeId).toBe("database");
+    expect(opened?.payload).toMatchObject({ failureCount: 2, threshold: 2 });
+    expect(runtime.getCircuitState("database").state).toBe("open");
+  });
+
+  it("retries still run while the circuit is closed", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 0.5,
+      retryPolicy: {
+        retries: 1,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 5,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    // The first attempt fails, the retry succeeds.
+    vi.spyOn(runtime.random, "next")
+      .mockReturnValueOnce(0.4)
+      .mockReturnValueOnce(0.6);
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drainUntil(
+      runtime,
+      processor,
+      "component.circuit_half_open",
+    );
+
+    expect(
+      events.some(
+        (e) => e.type === "request.retry" && e.payload?.requestId === "req-1",
+      ),
+    ).toBe(true);
+
+    expect(runtime.getRequest("req-1").attempts).toBe(2);
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+
+    // The success after the retry reset the counter; the circuit never opened.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+    });
+
+    expect(events.some((e) => e.type === "component.circuit_opened")).toBe(
+      false,
+    );
+  });
+
+  it("retry exhaustion fails terminally without opening the circuit", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 1,
+      retryPolicy: {
+        retries: 2,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 5,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+
+    const events = drain(runtime, processor);
+
+    const failed = events.find(
+      (e) => e.type === "request.failed" && e.payload?.requestId === "req-1",
+    );
+
+    expect(failed?.payload?.reason).toBe("component_error");
+    expect(runtime.getRequest("req-1").attempts).toBe(3);
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+
+    // The three retryable failures are counted but never reach the threshold.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 3,
+    });
+
+    expect(events.some((e) => e.type === "component.circuit_opened")).toBe(
+      false,
+    );
+  });
+
+  it("component recovery leaves circuit failure state intact", () => {
+    const config: ArchitectureNode["config"] = {
+      recoveryDelayMs: 1000,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 10,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    // Build up consecutive failures while staying closed.
+    runtime.recordCircuitFailure("api");
+    runtime.recordCircuitFailure("api");
+    runtime.recordCircuitFailure("api");
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 3,
+    });
+
+    // Run a full failure → automatic recovery cycle.
+    processor.process(createEvent("component.failed", 0, "req", "api"));
+
+    const recovery = dequeueEventOfType(runtime, "component.recovery");
+
+    processor.process(recovery!);
+
+    const recovered = dequeueEventOfType(runtime, "component.recovered");
+
+    processor.process(recovered!);
+
+    expect(runtime.getComponent("api").health).toBe("healthy");
+
+    // Recovery restored health only; the circuit breaker state is untouched.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 3,
+      generation: 0,
+      probeInFlight: false,
+    });
+  });
+
+  it("queues requests normally while the circuit is closed", () => {
+    const config: ArchitectureNode["config"] = {
+      latencyMs: 5,
+      capacity: 1,
+      queue: { maxSize: 2 },
+      errorRate: 0,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 10,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    createClientRequest(runtime, "req-1");
+    processor.process(createEvent("request.created", 0, "req-1", "client"));
+    createClientRequest(runtime, "req-2");
+    processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+    // Advance through the transmissions, routing, and req-1's processing start.
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+    processor.process(runtime.eventQueue.dequeue()!);
+
+    // req-2 arrives with the single slot still occupied: it must be queued,
+    // not rejected by the (closed) circuit.
+    processor.process(runtime.eventQueue.dequeue()!);
+
+    expect(runtime.getRequest("req-2").status).toBe("queued");
+    expect(runtime.getQueuedRequestCount("api")).toBe(1);
+    expect(runtime.getCircuitState("api").state).toBe("closed");
+
+    const events = drain(runtime, processor);
+
+    expect(runtime.getRequest("req-1").status).toBe("completed");
+    expect(runtime.getRequest("req-2").status).toBe("completed");
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+
+    expect(
+      events.some(
+        (e) =>
+          e.type === "request.failed" && e.payload?.reason === "circuit_open",
+      ),
+    ).toBe(false);
+  });
+
+  it("reproduces a full failure→open→half-open→success cycle for the same seed", () => {
+    const config: ArchitectureNode["config"] = {
+      errorRate: 0.5,
+      retryPolicy: {
+        retries: 1,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 3,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const scenario = (
+      runtime: SimulationRuntime,
+      processor: DefaultEventProcessor,
+    ): unknown[] => {
+      const transcript: unknown[] = [];
+
+      const originalProcess = processor.process.bind(processor);
+
+      processor.process = (event) => {
+        if (event.type !== "component.health_changed") {
+          transcript.push({
+            type: event.type,
+            requestId: event.payload?.requestId ?? null,
+            reason: event.payload?.reason ?? null,
+            generation: event.payload?.generation ?? null,
+            failureCount: event.payload?.failureCount ?? null,
+            threshold: event.payload?.threshold ?? null,
+          });
+        }
+
+        originalProcess(event);
+      };
+
+      // Failures trip the circuit and consume a retry along the way.
+      vi.spyOn(runtime.random, "next").mockReturnValue(0.2);
+
+      createClientRequest(runtime, "req-1");
+      processor.process(createEvent("request.created", 0, "req-1", "client"));
+      createClientRequest(runtime, "req-2");
+      processor.process(createEvent("request.created", 0, "req-2", "client"));
+
+      drainUntil(runtime, processor, "component.circuit_half_open");
+
+      expect(runtime.getCircuitState("api").state).toBe("open");
+
+      // Advance to half-open via the scheduled timer, then let the next
+      // request probe successfully.
+      const halfOpen = runtime.eventQueue.dequeue();
+
+      processor.process(halfOpen!);
+
+      expect(runtime.getCircuitState("api").state).toBe("half-open");
+
+      vi.spyOn(runtime.random, "next").mockReturnValue(0.9);
+
+      createClientRequest(runtime, "req-3");
+      processor.process(createEvent("request.created", 0, "req-3", "client"));
+
+      drain(runtime, processor);
+
+      return transcript;
+    };
+
+    const firstRun = createRuntime(circuitGraph(config), 7);
+    const first = scenario(firstRun.runtime, firstRun.processor);
+
+    const secondRun = createRuntime(circuitGraph(config), 7);
+    const second = scenario(secondRun.runtime, secondRun.processor);
+
+    // Same seed → identical circuit and retry event sequences.
+    expect(second).toEqual(first);
+
+    // The transcript captures the whole cycle: open, half-open, then closed.
+    const types = first.map((entry) => (entry as { type: string }).type);
+
+    expect(types.indexOf("component.circuit_opened")).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf("component.circuit_half_open")).toBeGreaterThan(
+      types.indexOf("component.circuit_opened"),
+    );
+    expect(types.indexOf("component.circuit_closed")).toBeGreaterThan(
+      types.indexOf("component.circuit_half_open"),
+    );
+
+    // A retry event ran before the trip, and the probe ultimately succeeded.
+    expect(types).toContain("request.retry");
+
+    expect(secondRun.runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+    });
+    expect(secondRun.runtime.getRequest("req-3").status).toBe("completed");
+  });
+});

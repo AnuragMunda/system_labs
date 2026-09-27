@@ -57,11 +57,18 @@ const autoscalingSchema = z
   })
   .optional();
 
+/** Optional circuit-breaker policy for a component. */
+const circuitBreakerSchema = z.object({
+  enabled: z.boolean().optional(),
+  failureThreshold: z.number().int().positive().optional(),
+  openDurationMs: z.number().nonnegative().optional(),
+});
+
 /** Optional retry/circuit-breaker policy for a component. */
 const retryPolicySchema = z
   .object({
     retries: z.number().int().nonnegative(),
-    circuitBreaker: z.boolean(),
+    circuitBreaker: z.union([circuitBreakerSchema, z.boolean()]).optional(),
   })
   .optional();
 

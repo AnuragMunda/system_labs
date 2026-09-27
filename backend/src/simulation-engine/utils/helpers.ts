@@ -8,10 +8,19 @@
 
 import { randomUUID } from "node:crypto";
 
+import {
+  CircuitBreakerConfig,
+  FailureKind,
+  RetryPolicy,
+} from "@/domain/architecture/component.types.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 
-import { DEFAULT_NETWORK_LATENCY_MS } from "./constants.js";
+import {
+  DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+  DEFAULT_CIRCUIT_OPEN_DURATION_MS,
+  DEFAULT_NETWORK_LATENCY_MS,
+} from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Error Rate
@@ -82,6 +91,46 @@ export function canRetry(attempts: number, maxRetries: number): boolean {
   }
 
   return attempts <= maxRetries;
+}
+
+// ---------------------------------------------------------------------------
+// Circuit Breaker Configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves a node's effective circuit-breaker configuration from its retry
+ * policy. A legacy boolean or an object without `enabled: true` leaves the
+ * breaker disabled; an enabled breaker gets centralized defaults for any
+ * omitted fields.
+ */
+export function resolveCircuitBreakerConfig(
+  retryPolicy: RetryPolicy | undefined,
+): CircuitBreakerConfig {
+  const candidate = retryPolicy?.circuitBreaker;
+
+  if (typeof candidate !== "object" || candidate === null) {
+    return { enabled: false };
+  }
+
+  if (candidate.enabled !== true) {
+    return { ...candidate, enabled: false };
+  }
+
+  return {
+    enabled: true,
+    failureThreshold:
+      candidate.failureThreshold ?? DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+    openDurationMs:
+      candidate.openDurationMs ?? DEFAULT_CIRCUIT_OPEN_DURATION_MS,
+  };
+}
+
+/**
+ * Whether a failure kind is eligible for a retry when the request's retry
+ * policy still has attempts available. Terminal kinds never retry.
+ */
+export function isRetryableFailure(kind: FailureKind): boolean {
+  return kind === "processing_error" || kind === "network_packet_loss";
 }
 
 // ---------------------------------------------------------------------------
