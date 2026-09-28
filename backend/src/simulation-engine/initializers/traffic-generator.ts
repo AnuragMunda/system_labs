@@ -30,10 +30,10 @@ export class TrafficGenerator {
    * rate and duration.
    *
    * Requests are emitted at a constant `1000 / requestsPerSecond` millisecond
-   * interval, starting at 0ms. The interval endpoint is exclusive: when an
-   * arrival would land exactly on `durationMs` it is not emitted. Fractional
+   * interval, starting at 0ms. The interval endpoint is exclusive: fractional
    * timestamps are rounded to the nearest whole millisecond for event and
-   * request timestamps.
+   * request timestamps, and an arrival is not emitted when its rounded
+   * timestamp lands on `durationMs`.
    *
    * @param sourceNodeId - The component each generated request originates from.
    */
@@ -50,9 +50,16 @@ export class TrafficGenerator {
     let sequence = 0;
 
     while (timestampMs < durationMs) {
-      const requestId = this.createRequestId(sequence);
       const eventTimestampMs = Math.round(timestampMs);
 
+      // durationMs is the exclusive endpoint: an arrival whose rounded
+      // timestamp lands on it is not emitted, so no event is ever created at
+      // the boundary the engine refuses to process.
+      if (eventTimestampMs >= durationMs) {
+        break;
+      }
+
+      const requestId = this.createRequestId(sequence);
       const request: SimulationRequest = {
         id: requestId,
         status: "pending",

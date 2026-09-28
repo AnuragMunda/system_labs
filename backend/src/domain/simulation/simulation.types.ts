@@ -44,10 +44,6 @@ export interface SimulationConfig {
   // Same architecture + config + seed => same result.
   randomSeed?: number;
 
-  // Maximum number of events processed in one simulation tick.
-  // Prevents runaway simulations.
-  maxEventsPerTick?: number;
-
   // Whether metrics should be collected.
   collectMetrics: boolean;
 

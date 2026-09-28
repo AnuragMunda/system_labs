@@ -135,6 +135,27 @@ describe("TrafficGenerator", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("should not emit an arrival whose rounded timestamp lands on the duration boundary", () => {
+    const { runtime, generator, sourceNodeId } = setup({
+      durationMs: 1000,
+      requestsPerSecond: 2000,
+      simulationSpeed: 1,
+      collectMetrics: true,
+      emitEvents: true,
+    });
+
+    generator.generate(sourceNodeId);
+
+    const events = drainEvents(runtime);
+
+    // 0.5ms interval: arrivals 0..999.5. The final arrival rounds to 1000 —
+    // the exclusive boundary — so it is not emitted.
+    expect(events).toHaveLength(1999);
+    expect(events.every((event) => event.timestampMs < 1000)).toBe(true);
+    expect(Math.max(...events.map((event) => event.timestampMs))).toBe(999);
+    expect(runtime.getAllRequests()).toHaveLength(1999);
+  });
+
   it("should allow multiple requests to share the same timestamp", () => {
     const { runtime, generator, sourceNodeId } = setup({
       durationMs: 5,
