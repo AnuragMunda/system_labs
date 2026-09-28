@@ -25,6 +25,14 @@ export interface SimulationRequest {
   attempts: number;
 
   /**
+   * Simulation time the request was enqueued at its current component's
+   * queue. Set when the request is admitted to a queue and cleared when it is
+   * dequeued; used to derive per-component queue-wait latency. Present only
+   * while the request is queued.
+   */
+  queuedAtMs?: number;
+
+  /**
    * The stable resource key a cache component uses to look this request up
    * (for example `GET:/users/123`). Assigned deterministically when the
    * request is created; independent of the request id.

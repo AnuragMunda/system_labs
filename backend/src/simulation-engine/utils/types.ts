@@ -10,6 +10,7 @@ import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 import { RuntimeComponentHealth } from "@/domain/architecture/component.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 
+import { LatencyHistogram } from "../metrics/latency-histogram.js";
 import { SimulationRandom } from "../random/simulation-random.js";
 
 /** The contract for turning a single simulation event into runtime transitions. */
@@ -69,6 +70,62 @@ export interface ComponentRuntimeState {
   recoveryGeneration: number; // Identifies the current failure/recovery cycle.
 
   circuit: ComponentCircuitBreakerState;
+
+  /** Observability counters and samples for this component's metrics report. */
+  metrics: ComponentRuntimeMetrics;
+}
+
+/**
+ * Per-component observability state backing the metrics snapshot. Collects
+ * counters and latency samples that are not otherwise captured by the runtime
+ * state above; every field is formatted into the `SimulationMetrics` report by
+ * the metrics snapshot builder. None of these fields affect simulation
+ * behavior — they are pure observations.
+ */
+export interface ComponentRuntimeMetrics {
+  /** Highest concurrent request count ever observed. */
+  peakActiveRequests: number;
+
+  /** Highest queue depth ever observed. */
+  peakQueueDepth: number;
+  /** Total requests admitted to the component's queue. */
+  totalEnqueued: number;
+  /** Total requests dequeued from the component's queue. */
+  totalDequeued: number;
+  /** Total requests discarded by `drop_oldest` overflow handling. */
+  totalDropped: number;
+  /** Total requests rejected because the queue was full or disabled. */
+  totalRejected: number;
+  /** Samples of how long requests waited in the component's queue. */
+  queueWait: LatencyHistogram;
+
+  /** Health state transitions observed for the component. */
+  healthTransitions: number;
+  /** Transitions into the `failed` state. */
+  healthFailureCount: number;
+  /** Transitions out of the `failed` state. */
+  healthRecoveryCount: number;
+  /** Simulated milliseconds spent in each health state (deltas only; the
+   * open tail is credited at snapshot build). */
+  timeInStateMs: Record<RuntimeComponentHealth, number>;
+  /** Simulation time of the component's most recent health transition. */
+  lastHealthTransitionAtMs: number;
+
+  /** Replica count when the component was first initialized. */
+  initialReplicas: number;
+  /** Lowest replica count ever applied. */
+  minimumReplicas: number;
+  /** Highest replica count ever applied. */
+  maximumReplicas: number;
+  /** Times the component scaled up. */
+  scaleUpCount: number;
+  /** Times the component scaled down. */
+  scaleDownCount: number;
+  /** `autoscaling.evaluate` events processed for the component. */
+  autoscalingEvaluationCount: number;
+
+  /** Samples of processing latency for completed requests. */
+  processingLatency: LatencyHistogram;
 }
 
 /** The run state of a component's circuit breaker. */
@@ -175,4 +232,6 @@ export interface CacheState {
   misses: number;
   /** Total number of LRU evictions performed. */
   evictions: number;
+  /** Highest number of entries the cache has ever held. */
+  maxEntries: number;
 }

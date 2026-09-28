@@ -40,6 +40,8 @@ export class AutoscalingHandlers {
 
     this.autoscalingController.evaluate(event);
 
+    this.runtime.recordAutoscalingEvaluation(nodeId);
+
     this.autoscalingScheduler.scheduleNext(nodeId, event.timestampMs);
   }
 

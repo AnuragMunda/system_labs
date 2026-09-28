@@ -63,6 +63,8 @@ export class DatabaseHandlers {
 
     this.runtime.updateRequest(requestId, { databaseOperation: operation });
 
+    this.runtime.recordDatabaseOperation(event.sourceNodeId, operation);
+
     this.runtime.schedule(
       createEvent({
         simulationId: event.simulationId,

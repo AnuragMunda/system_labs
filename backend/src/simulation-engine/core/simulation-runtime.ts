@@ -22,6 +22,7 @@ import {
   CircuitFailureRecord,
   ComponentCircuitBreakerState,
   ComponentHealthStateChange,
+  ComponentRuntimeMetrics,
   ComponentRuntimeState,
   QueueAdmissionResult,
   RoutingContext,
@@ -39,6 +40,75 @@ import {
   resolveCircuitBreakerConfig,
 } from "../utils/helpers.js";
 import { SimulationCache } from "../cache/simulation-cache.js";
+import { LatencyHistogram } from "../metrics/latency-histogram.js";
+import {
+  MetricsSnapshotSource,
+  buildSimulationMetrics,
+} from "../metrics/metrics-snapshot.js";
+import { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
+import { DatabaseOperation } from "@/domain/simulation/request.types.js";
+
+/**
+ * Simulation-level metrics observations that cannot be derived from the
+ * request map or a component's runtime state. Populated only when metrics
+ * collection is enabled.
+ */
+export interface RuntimeMetricsStore {
+  failureByReason: Record<string, number>;
+  failureByNode: Record<string, number>;
+  retriesByNode: Record<string, number>;
+  totalRetries: number;
+  transmissions: number;
+  packetLosses: number;
+  networkLatency: LatencyHistogram;
+  dbOperations: Record<string, { read: number; write: number }>;
+}
+
+export function createMetricsStore(): RuntimeMetricsStore {
+  return {
+    failureByReason: {},
+    failureByNode: {},
+    retriesByNode: {},
+    totalRetries: 0,
+    transmissions: 0,
+    packetLosses: 0,
+    networkLatency: new LatencyHistogram(),
+    dbOperations: {},
+  };
+}
+
+/**
+ * Builds the zeroed per-component observability state for a component that is
+ * being initialized with the given replica count.
+ */
+export function createComponentMetrics(
+  replicas: number,
+): ComponentRuntimeMetrics {
+  return {
+    peakActiveRequests: 0,
+    peakQueueDepth: 0,
+    totalEnqueued: 0,
+    totalDequeued: 0,
+    totalDropped: 0,
+    totalRejected: 0,
+    queueWait: new LatencyHistogram(),
+    healthTransitions: 0,
+    healthFailureCount: 0,
+    healthRecoveryCount: 0,
+    timeInStateMs: { healthy: 0, degraded: 0, critical: 0, failed: 0 },
+    lastHealthTransitionAtMs: 0,
+    initialReplicas: replicas,
+    minimumReplicas: replicas,
+    maximumReplicas: replicas,
+    scaleUpCount: 0,
+    scaleDownCount: 0,
+    autoscalingEvaluationCount: 0,
+    processingLatency: new LatencyHistogram(),
+  };
+}
+
+/** A processed-request reason string, used to key the failure-by-reason map. */
+export type FailureReason = string;
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -61,6 +131,14 @@ export class SimulationRuntime {
   private readonly routingStrategies = new Map<string, RoutingStrategy>();
   private readonly caches = new Map<string, SimulationCache>();
 
+  /**
+   * Simulation-level observability counters that have no natural home on a
+   * component. Request success/failure counts and end-to-end latencies are
+   * derived from the request map at snapshot time; only observations that are
+   * not recoverable from the request map are stored here.
+   */
+  private metricsStore = createMetricsStore();
+
   constructor(simulation: Simulation) {
     this.simulation = simulation;
     this.random = new SimulationRandom(simulation.seed);
@@ -80,6 +158,141 @@ export class SimulationRuntime {
   /** Returns the current virtual simulation time in milliseconds. */
   get currentTimeMs(): number {
     return this.clock.now();
+  }
+
+  /**
+   * Whether observability metrics are being collected. When false, recording is
+   * skipped entirely and {@link getMetrics} returns a zeroed snapshot.
+   */
+  get metricsEnabled(): boolean {
+    return this.simulation.config.collectMetrics;
+  }
+
+  // ---------------------------------------------------------------------------
+  // METRICS
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Records that a request permanently failed on a component, keyed by reason
+   * and (where known) the failing node.
+   */
+  recordRequestFailure(reason: string, nodeId?: string): void {
+    if (!this.metricsEnabled) return;
+
+    this.metricsStore.failureByReason[reason] =
+      (this.metricsStore.failureByReason[reason] ?? 0) + 1;
+
+    if (nodeId) {
+      this.metricsStore.failureByNode[nodeId] =
+        (this.metricsStore.failureByNode[nodeId] ?? 0) + 1;
+    }
+  }
+
+  /**
+   * Records that a request was retried after a failure on the given node.
+   */
+  recordRetry(nodeId: string): void {
+    if (!this.metricsEnabled) return;
+
+    this.metricsStore.retriesByNode[nodeId] =
+      (this.metricsStore.retriesByNode[nodeId] ?? 0) + 1;
+    this.metricsStore.totalRetries++;
+  }
+
+  /**
+   * Records a network transmission: either a delivered (success) message or a
+   * dropped (packet loss) message. The inter-component delay is sampled into
+   * the network latency histogram when the message is delivered.
+   */
+  recordNetworkTransmission(dropped: boolean, latencyMs: number): void {
+    if (!this.metricsEnabled) return;
+
+    this.metricsStore.transmissions++;
+
+    if (dropped) {
+      this.metricsStore.packetLosses++;
+      return;
+    }
+
+    this.metricsStore.networkLatency.record(latencyMs);
+  }
+
+  /**
+   * Records a database operation performed by a database node.
+   */
+  recordDatabaseOperation(nodeId: string, operation: DatabaseOperation): void {
+    if (!this.metricsEnabled) return;
+
+    const entry = this.metricsStore.dbOperations[nodeId] ?? {
+      read: 0,
+      write: 0,
+    };
+
+    if (operation === "write") {
+      entry.write++;
+    } else {
+      entry.read++;
+    }
+
+    this.metricsStore.dbOperations[nodeId] = entry;
+  }
+
+  /**
+   * Returns every request in the simulation, in insertion order.
+   */
+  getAllRequests(): SimulationRequest[] {
+    return Array.from(this.requests.values());
+  }
+
+  /**
+   * Builds the immutable metrics snapshot for the simulation at the current
+   * virtual time. The snapshot is deeply frozen; callers must not mutate it.
+   */
+  getMetrics(): SimulationMetrics {
+    const source: MetricsSnapshotSource = {
+      collectMetrics: this.metricsEnabled,
+      simulationId: this.simulation.id,
+      durationMs: this.simulation.config.durationMs,
+      processedDurationMs: this.clock.now(),
+      requests: Array.from(this.requests.values()),
+      components: Array.from(this.components.values()),
+      nodeTypes: new Map(
+        this.simulation.architectureSnapshot.nodes.map((node) => [
+          node.id,
+          node.type,
+        ]),
+      ),
+      autoscalingEnabled: new Map(
+        this.simulation.architectureSnapshot.nodes.map((node) => [
+          node.id,
+          node.config.autoscaling?.enabled === true,
+        ]),
+      ),
+      queueDepths: new Map(
+        Array.from(this.components.keys()).map((nodeId) => [
+          nodeId,
+          this.componentRequestQueue.size(nodeId),
+        ]),
+      ),
+      cacheNodes: Array.from(this.caches.entries()).map(([nodeId, cache]) => ({
+        nodeId,
+        hits: cache.hits,
+        misses: cache.misses,
+        evictions: cache.evictions,
+        currentEntries: cache.size,
+        maxEntries: cache.maxEntries,
+      })),
+      dbOperations: this.metricsStore.dbOperations,
+      failureByReason: this.metricsStore.failureByReason,
+      failureByNode: this.metricsStore.failureByNode,
+      retriesByNode: this.metricsStore.retriesByNode,
+      totalRetries: this.metricsStore.totalRetries,
+      transmissions: this.metricsStore.transmissions,
+      packetLosses: this.metricsStore.packetLosses,
+      networkSummary: this.metricsStore.networkLatency.summary(),
+    };
+
+    return buildSimulationMetrics(source);
   }
 
   // ---------------------------------------------------------------------------
@@ -142,6 +355,15 @@ export class SimulationRuntime {
     this.updateComponent(nodeId, {
       activeRequests: component.activeRequests + 1,
     });
+
+    if (this.metricsEnabled) {
+      this.updateComponentMetrics(nodeId, {
+        peakActiveRequests: Math.max(
+          component.metrics.peakActiveRequests,
+          component.activeRequests + 1,
+        ),
+      });
+    }
   }
 
   /**
@@ -213,6 +435,10 @@ export class SimulationRuntime {
 
       lastProcessingLatencyMs: latencyMs,
     });
+
+    if (this.metricsEnabled) {
+      component.metrics.processingLatency.record(latencyMs);
+    }
   }
 
   /**
@@ -257,6 +483,8 @@ export class SimulationRuntime {
       health,
     });
 
+    this.observeHealthTransition(nodeId, previousHealth, health);
+
     return {
       previousHealth,
       health,
@@ -273,11 +501,13 @@ export class SimulationRuntime {
     nodeId: string,
     health: ComponentRuntimeState["health"],
   ): void {
-    this.getComponent(nodeId);
+    const previousHealth = this.getComponent(nodeId).health;
 
     this.updateComponent(nodeId, {
       health,
     });
+
+    this.observeHealthTransition(nodeId, previousHealth, health);
   }
 
   /**
@@ -583,12 +813,31 @@ export class SimulationRuntime {
       throw new Error(`Node not found: ${nodeId}`);
     }
 
+    const previousReplicas = this.getComponent(nodeId).replicas;
+
     const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
 
     this.updateComponent(nodeId, {
       replicas,
       effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
     });
+
+    if (this.metricsEnabled) {
+      const component = this.getComponent(nodeId);
+
+      const scaleUpCount =
+        component.metrics.scaleUpCount + (replicas > previousReplicas ? 1 : 0);
+      const scaleDownCount =
+        component.metrics.scaleDownCount +
+        (replicas < previousReplicas ? 1 : 0);
+
+      this.updateComponentMetrics(nodeId, {
+        minimumReplicas: Math.min(component.metrics.minimumReplicas, replicas),
+        maximumReplicas: Math.max(component.metrics.maximumReplicas, replicas),
+        scaleUpCount,
+        scaleDownCount,
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -647,6 +896,8 @@ export class SimulationRuntime {
     const queueConfig = node.config.queue;
 
     if (queueConfig?.enabled === false) {
+      this.recordQueueRejection(nodeId);
+
       return {
         admitted: false,
         reason: "queue_disabled",
@@ -667,6 +918,8 @@ export class SimulationRuntime {
       const overflowStrategy = queueConfig?.overflowStrategy ?? "reject";
 
       if (overflowStrategy === "reject") {
+        this.recordQueueRejection(nodeId);
+
         return {
           admitted: false,
           reason: "queue_full",
@@ -683,6 +936,7 @@ export class SimulationRuntime {
         }
 
         this.componentRequestQueue.enqueue(nodeId, requestId);
+        this.recordQueueAdmission(nodeId, requestId, true);
 
         return {
           admitted: true,
@@ -692,6 +946,7 @@ export class SimulationRuntime {
     }
 
     this.componentRequestQueue.enqueue(nodeId, requestId);
+    this.recordQueueAdmission(nodeId, requestId);
 
     return {
       admitted: true,
@@ -700,7 +955,28 @@ export class SimulationRuntime {
 
   /** Remove and return the next request from a component's queue, or `undefined` if empty. */
   dequeueRequest(nodeId: string): string | undefined {
-    return this.componentRequestQueue.dequeue(nodeId);
+    const requestId = this.componentRequestQueue.dequeue(nodeId);
+
+    if (requestId === undefined || !this.metricsEnabled) {
+      return requestId;
+    }
+
+    const component = this.getComponent(nodeId);
+
+    this.updateComponentMetrics(nodeId, {
+      totalDequeued: component.metrics.totalDequeued + 1,
+    });
+
+    const request = this.requests.get(requestId);
+
+    if (request?.queuedAtMs !== undefined) {
+      component.metrics.queueWait.record(
+        this.currentTimeMs - request.queuedAtMs,
+      );
+      this.updateRequest(requestId, { queuedAtMs: undefined });
+    }
+
+    return requestId;
   }
 
   /** Return the number of requests waiting in a component's queue. */
@@ -781,6 +1057,7 @@ export class SimulationRuntime {
         replicas,
         effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
         recoveryGeneration: 0,
+        metrics: createComponentMetrics(replicas),
         circuit: {
           enabled: circuitConfig.enabled ?? false,
           failureThreshold:
@@ -846,6 +1123,7 @@ export class SimulationRuntime {
     this.components.clear();
     this.componentRequestQueue.clear();
     this.routingStrategies.clear();
+    this.metricsStore = createMetricsStore();
 
     this.initializeComponents();
     this.initializeRoutingStrategies();
@@ -855,6 +1133,113 @@ export class SimulationRuntime {
   // ---------------------------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------------------------
+
+  /**
+   * Merges a patch into a component's metrics observability state.
+   */
+  private updateComponentMetrics(
+    nodeId: string,
+    patch: Partial<ComponentRuntimeMetrics>,
+  ): void {
+    const component = this.getComponent(nodeId);
+
+    this.updateComponent(nodeId, {
+      metrics: {
+        ...component.metrics,
+        ...patch,
+      },
+    });
+  }
+
+  /**
+   * Records that an admitted request entered a component's queue, stamps its
+   * enqueue time, and tracks the observed peak queue depth.
+   */
+  private recordQueueAdmission(
+    nodeId: string,
+    requestId: string,
+    droppedOldest = false,
+  ): void {
+    if (!this.metricsEnabled) return;
+
+    const component = this.getComponent(nodeId);
+
+    this.updateComponentMetrics(nodeId, {
+      totalEnqueued: component.metrics.totalEnqueued + 1,
+      totalDropped: component.metrics.totalDropped + (droppedOldest ? 1 : 0),
+      peakQueueDepth: Math.max(
+        component.metrics.peakQueueDepth,
+        this.getQueuedRequestCount(nodeId),
+      ),
+    });
+
+    // The stamp is only meaningful for requests the runtime actually tracks;
+    // low-level queue callers may enqueue a raw id without a request record.
+    const request = this.requests.get(requestId);
+
+    if (request) {
+      this.requests.set(requestId, {
+        ...request,
+        queuedAtMs: this.currentTimeMs,
+      });
+    }
+  }
+
+  /**
+   * Records that a request was rejected from a component's queue.
+   */
+  private recordQueueRejection(nodeId: string): void {
+    if (!this.metricsEnabled) return;
+
+    const component = this.getComponent(nodeId);
+
+    this.updateComponentMetrics(nodeId, {
+      totalRejected: component.metrics.totalRejected + 1,
+    });
+  }
+
+  /**
+   * Records a health state transition, crediting the elapsed virtual time to
+   * the previous state and counting the transition.
+   */
+  private observeHealthTransition(
+    nodeId: string,
+    previousHealth: ComponentRuntimeState["health"],
+    health: ComponentRuntimeState["health"],
+  ): void {
+    if (!this.metricsEnabled || previousHealth === health) return;
+
+    const component = this.getComponent(nodeId);
+    const timeInStateMs = { ...component.metrics.timeInStateMs };
+
+    timeInStateMs[previousHealth] +=
+      this.currentTimeMs - component.metrics.lastHealthTransitionAtMs;
+
+    this.updateComponentMetrics(nodeId, {
+      healthTransitions: component.metrics.healthTransitions + 1,
+      healthFailureCount:
+        component.metrics.healthFailureCount + (health === "failed" ? 1 : 0),
+      healthRecoveryCount:
+        component.metrics.healthRecoveryCount +
+        (previousHealth === "failed" ? 1 : 0),
+      timeInStateMs,
+      lastHealthTransitionAtMs: this.currentTimeMs,
+    });
+  }
+
+  /**
+   * Records that an `autoscaling.evaluate` event was resolved for a component.
+   */
+  recordAutoscalingEvaluation(nodeId: string): void {
+    if (!this.metricsEnabled) return;
+
+    const component = this.getComponent(nodeId);
+
+    this.updateComponentMetrics(nodeId, {
+      autoscalingEvaluationCount:
+        component.metrics.autoscalingEvaluationCount + 1,
+    });
+  }
 
   /**
    * Returns the number of active (in-flight) requests for a node, or `0` if

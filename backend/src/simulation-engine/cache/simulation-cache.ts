@@ -39,6 +39,7 @@ export class SimulationCache {
       hits: 0,
       misses: 0,
       evictions: 0,
+      maxEntries: 0,
     };
   }
 
@@ -56,6 +57,10 @@ export class SimulationCache {
 
   get evictions(): number {
     return this.state.evictions;
+  }
+
+  get maxEntries(): number {
+    return this.state.maxEntries;
   }
 
   get(key: string, currentTimeMs: number): CacheEntry | undefined {
@@ -107,6 +112,10 @@ export class SimulationCache {
     };
 
     this.state.entries.set(key, entry);
+
+    if (this.state.entries.size > this.state.maxEntries) {
+      this.state.maxEntries = this.state.entries.size;
+    }
   }
 
   delete(key: string): boolean {
@@ -122,6 +131,7 @@ export class SimulationCache {
     this.state.hits = 0;
     this.state.misses = 0;
     this.state.evictions = 0;
+    this.state.maxEntries = 0;
   }
 
   private isExpired(entry: CacheEntry, currentTimeMs: number): boolean {

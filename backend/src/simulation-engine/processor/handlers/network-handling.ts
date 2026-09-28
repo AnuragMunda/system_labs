@@ -89,6 +89,8 @@ export class NetworkHandlers {
 
     const lost = this.isTransmissionLost(packetLossRate);
 
+    this.runtime.recordNetworkTransmission(lost, totalDelayMs);
+
     if (lost) {
       this.handleLostTransmission(event, edge, latencyMs);
 

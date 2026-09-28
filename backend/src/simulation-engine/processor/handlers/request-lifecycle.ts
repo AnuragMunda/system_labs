@@ -530,6 +530,13 @@ export class RequestLifecycleHandlers {
   handleFailed(event: SimulationEvent): void {
     const requestId = getRequestId(event);
 
+    const reason =
+      typeof event.payload?.reason === "string"
+        ? event.payload.reason
+        : "unknown";
+
+    this.runtime.recordRequestFailure(reason, event.sourceNodeId ?? undefined);
+
     this.runtime.updateRequest(requestId, {
       status: "failed",
       failedAtMs: event.timestampMs,
@@ -542,6 +549,12 @@ export class RequestLifecycleHandlers {
 
   handleRetry(event: SimulationEvent): void {
     const requestId = getRequestId(event);
+
+    // "Retries initiated at this node" is keyed by the node whose retry policy
+    // decided to retry (the retry event's source node).
+    if (event.sourceNodeId) {
+      this.runtime.recordRetry(event.sourceNodeId);
+    }
 
     // A network-level retry re-runs the routing from the transmitting node so
     // a new transmission is attempted over the connection. Everything else
