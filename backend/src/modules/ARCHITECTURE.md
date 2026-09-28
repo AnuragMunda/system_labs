@@ -176,6 +176,15 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - Own no simulation state and no event semantics — those belong to the runtime
   and the event processor.
 
+**Lifecycle**
+
+- All status transitions flow through `SimulationLifecycle`, a single state
+  machine that rejects invalid transitions instead of applying them silently.
+- Valid transitions: `created → running`, `created → cancelled`,
+  `running → paused/completed/failed/cancelled`, `paused → running/cancelled`.
+- Terminal states (`completed`, `failed`, `cancelled`) never transition again;
+  a `step()` whose event processing throws marks the simulation `failed`.
+
 **What the engine does not do**
 
 - Traffic generation, failure scheduling, and autoscaling initialization are

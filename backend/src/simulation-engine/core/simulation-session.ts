@@ -15,6 +15,7 @@ import { SimulationEngine } from "./simulation-engine.js";
 import { TrafficGenerator } from "../initializers/traffic-generator.js";
 import { FailureScheduler } from "../initializers/failure-scheduler.js";
 import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
+import { assertSimulationTransitionAllowed } from "./simulation-lifecycle.js";
 
 /**
  * Coordinates the setup that precedes a simulation run: traffic generation,
@@ -41,11 +42,7 @@ export class SimulationSession {
    * @throws If the simulation is not currently `created`.
    */
   prepare(entryNodeId: string): void {
-    if (this.runtime.simulation.status !== "created") {
-      throw new Error(
-        `Simulation cannot be prepared from status ${this.runtime.simulation.status}`,
-      );
-    }
+    assertSimulationTransitionAllowed(this.runtime.simulation, "prepare");
 
     this.trafficGenerator.generate(entryNodeId);
     this.failureScheduler.schedule();

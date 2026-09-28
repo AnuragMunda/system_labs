@@ -1035,6 +1035,44 @@ describe("SimulationEngine", () => {
     expect(runtime.eventQueue.size()).toBe(2);
   });
 
+  it("should mark the simulation failed when a step's processor throws", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi.fn(() => {
+      throw new Error("Processing failed");
+    });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    runtime.simulation.status = "running";
+    engine.schedule(createEvent("event-a", 100));
+
+    expect(() => engine.step()).toThrow("Processing failed");
+    expect(runtime.simulation.status).toBe("failed");
+    expect(runtime.simulation.completedAt).toBeDefined();
+  });
+
+  it("should keep the clock at the event that failed a step", () => {
+    const simulation = createSimulation();
+    const runtime = new SimulationRuntime(simulation);
+    const processEvent = vi
+      .fn()
+      .mockReturnValueOnce(undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("Processing failed");
+      });
+    const engine = new SimulationEngine(runtime, { process: processEvent });
+
+    runtime.simulation.status = "running";
+    engine.schedule(createEvent("event-1", 100));
+    engine.schedule(createEvent("event-2", 200));
+
+    engine.step();
+
+    expect(() => engine.step()).toThrow("Processing failed");
+    expect(runtime.clock.now()).toBe(200);
+    expect(runtime.simulation.status).toBe("failed");
+  });
+
   it("should return false when no event is eligible", () => {
     const { runtime, engine } = createFixture();
 
@@ -1233,6 +1271,15 @@ describe("SimulationEngine", () => {
     expect(runtime.simulation.status).toBe("cancelled");
   });
 
+  it("should cancel a created simulation", () => {
+    const { runtime, engine } = createFixture();
+
+    engine.cancel();
+
+    expect(runtime.simulation.status).toBe("cancelled");
+    expect(runtime.simulation.completedAt).toBeDefined();
+  });
+
   it("should cancel a paused simulation", () => {
     const { runtime, engine } = createFixture();
 
@@ -1270,7 +1317,7 @@ describe("SimulationEngine", () => {
     },
   );
 
-  it.each(["created", "completed", "failed", "cancelled"] as const)(
+  it.each(["completed", "failed", "cancelled"] as const)(
     "should throw when cancelling a %s simulation",
     (status) => {
       const simulation = createSimulation({ status });

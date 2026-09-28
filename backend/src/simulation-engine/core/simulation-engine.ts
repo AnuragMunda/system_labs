@@ -12,6 +12,7 @@
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { EventProcessor } from "../utils/types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
+import { transitionSimulationStatus } from "./simulation-lifecycle.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its
@@ -58,14 +59,7 @@ export class SimulationEngine {
    * @throws If the simulation is not currently `created`.
    */
   start(): void {
-    if (this.runtime.simulation.status !== "created") {
-      throw new Error(
-        `Simulation cannot be started from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.runtime.simulation.status = "running";
-    this.runtime.simulation.startedAt = new Date();
+    transitionSimulationStatus(this.runtime.simulation, "start");
   }
 
   /**
@@ -74,21 +68,25 @@ export class SimulationEngine {
    * otherwise in place. Returns `true` when an event was processed and
    * `false` when nothing eligible remains in the queue.
    *
-   * @throws If the simulation is not currently `running`.
+   * @throws If the simulation is not currently `running`. If processing the
+   *   event throws, the simulation transitions to `failed` before the error
+   *   propagates.
    */
   step(): boolean {
-    if (this.runtime.simulation.status !== "running") {
-      throw new Error(
-        `Simulation cannot be stepped from status ${this.runtime.simulation.status}`,
-      );
-    }
+    transitionSimulationStatus(this.runtime.simulation, "step");
 
     if (!this.hasPendingEvents()) {
       this.complete();
       return false;
     }
 
-    this.processNextEvent();
+    try {
+      this.processNextEvent();
+    } catch (error) {
+      this.fail();
+
+      throw error;
+    }
 
     if (!this.hasPendingEvents()) {
       this.complete();
@@ -110,42 +108,20 @@ export class SimulationEngine {
 
   /** Pauses a running simulation, halting further event processing. */
   pause(): void {
-    if (this.runtime.simulation.status !== "running") {
-      throw new Error(
-        `Simulation cannot be paused from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.runtime.simulation.status = "paused";
+    transitionSimulationStatus(this.runtime.simulation, "pause");
   }
 
   /** Resumes a paused simulation so event processing can continue. */
   resume(): void {
-    if (this.runtime.simulation.status !== "paused") {
-      throw new Error(
-        `Simulation cannot be resumed from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.runtime.simulation.status = "running";
+    transitionSimulationStatus(this.runtime.simulation, "resume");
   }
 
   /**
-   * Cancels a running or paused simulation, marking it cancelled and
+   * Cancels a created, running, or paused simulation, marking it cancelled and
    * recording when it ended.
    */
   cancel(): void {
-    if (
-      this.runtime.simulation.status !== "running" &&
-      this.runtime.simulation.status !== "paused"
-    ) {
-      throw new Error(
-        `Simulation cannot be cancelled from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.runtime.simulation.status = "cancelled";
-    this.runtime.simulation.completedAt = new Date();
+    transitionSimulationStatus(this.runtime.simulation, "cancel");
   }
 
   /**
@@ -185,13 +161,11 @@ export class SimulationEngine {
 
   /** Marks the simulation completed and records when it finished. */
   private complete(): void {
-    this.runtime.simulation.status = "completed";
-    this.runtime.simulation.completedAt = new Date();
+    transitionSimulationStatus(this.runtime.simulation, "complete");
   }
 
   /** Marks the simulation failed and records when it stopped. */
   private fail(): void {
-    this.runtime.simulation.status = "failed";
-    this.runtime.simulation.completedAt = new Date();
+    transitionSimulationStatus(this.runtime.simulation, "fail");
   }
 }
