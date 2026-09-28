@@ -1,11 +1,8 @@
 import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
-import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
-import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 function createSimulation(config: Simulation["config"]): Simulation {
   return {
@@ -30,14 +27,7 @@ function setup(
   sourceNodeId: string;
 } {
   const runtime = new SimulationRuntime(createSimulation(config));
-  const engine = new SimulationEngine(
-    runtime,
-    { process: vi.fn() },
-    new TrafficGenerator(runtime),
-    new FailureScheduler(runtime),
-    new AutoscalingScheduler(runtime),
-  );
-  const generator = new TrafficGenerator(runtime, engine);
+  const generator = new TrafficGenerator(runtime);
 
   return { runtime, generator, sourceNodeId };
 }

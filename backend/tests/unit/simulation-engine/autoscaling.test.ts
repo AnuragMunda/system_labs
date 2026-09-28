@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
+import { SimulationSession } from "@/simulation-engine/core/simulation-session.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
 import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
@@ -558,50 +559,50 @@ describe("SimulationEngine autoscaling", () => {
         inner.process(event);
       },
     };
-    const engine = new SimulationEngine(
+    const engine = new SimulationEngine(runtime, processor);
+    const session = new SimulationSession(
       runtime,
-      processor,
+      engine,
       new TrafficGenerator(runtime),
       new FailureScheduler(runtime),
       new AutoscalingScheduler(runtime),
     );
 
-    return { runtime, engine, seen };
+    return { runtime, engine, session, seen };
   }
 
   it("should schedule initial autoscaling evaluations while created", () => {
-    const { runtime, engine } = createEngine();
+    const { runtime, session } = createEngine();
 
-    engine.initializeAutoscaling();
+    session.prepare("client");
 
-    const events = drainEvents(runtime);
+    const events = drainEvents(runtime).filter(
+      (event) => event.type === "autoscaling.evaluate",
+    );
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("autoscaling.evaluate");
     expect(events[0]?.sourceNodeId).toBe("api");
     expect(events[0]?.timestampMs).toBe(1000);
   });
 
-  it("should not schedule autoscaling evaluations once the simulation is running", () => {
-    const { runtime, engine } = createEngine();
+  it("should not prepare the simulation once the simulation is running", () => {
+    const { runtime, engine, session } = createEngine();
 
     engine.start();
 
-    expect(() => engine.initializeAutoscaling()).toThrow(/status running/);
+    expect(() => session.prepare("client")).toThrow(/status running/);
     expect(runtime.eventQueue.size()).toBe(0);
   });
 
   // This heavy end-to-end run processes tens of thousands of events; leave
   // generous headroom for the shared load of the full parallel suite.
   it("should scale a saturated component up to its maximum during a full run", () => {
-    const { runtime, engine, seen } = createEngine();
+    const { runtime, session, seen } = createEngine();
 
     // 2000 requests/s against 100ms of processing with concurrency 1 keeps the
     // api permanently saturated (utilization 100%), so each evaluation grows it
     // by one — at 1000/2000/3000ms — until the max of 5 is reached.
-    engine.initializeTraffic("client");
-    engine.initializeFailures();
-    engine.initializeAutoscaling();
-    engine.run();
+    session.run("client");
 
     const component = runtime.getComponent("api");
     expect(component.replicas).toBe(5);
@@ -623,12 +624,9 @@ describe("SimulationEngine autoscaling", () => {
   // The same heavy full run as above; keep the same generous headroom.
   it("should produce identical autoscaling decisions for the same seed", () => {
     function decisions() {
-      const { engine, seen } = createEngine();
+      const { session, seen } = createEngine();
 
-      engine.initializeTraffic("client");
-      engine.initializeFailures();
-      engine.initializeAutoscaling();
-      engine.run();
+      session.run("client");
 
       // Event ids are randomUUIDs, so determinism is asserted over the
       // decision fields only.

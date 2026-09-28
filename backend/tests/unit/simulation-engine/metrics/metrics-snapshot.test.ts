@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
+import { SimulationSession } from "@/simulation-engine/core/simulation-session.js";
 import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
 import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
 import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
@@ -82,27 +83,29 @@ function createFixture(
   const controller = new AutoscalingController(runtime);
   const scheduler = new AutoscalingScheduler(runtime);
   const processor = new DefaultEventProcessor(runtime, controller, scheduler);
-  const engine = new SimulationEngine(
+  const engine = new SimulationEngine(runtime, processor);
+  const session = new SimulationSession(
     runtime,
-    processor,
+    engine,
     new TrafficGenerator(runtime),
     new FailureScheduler(runtime),
     scheduler,
   );
 
-  return { simulation, runtime, controller, processor, scheduler, engine };
+  return {
+    simulation,
+    runtime,
+    controller,
+    processor,
+    scheduler,
+    engine,
+    session,
+  };
 }
 
 /** Runs a complete engine loop (load + failures + autoscaling + execution). */
-function runToEnd(
-  runtime: SimulationRuntime,
-  engine: SimulationEngine,
-  entryNodeId: string,
-): void {
-  engine.initializeTraffic(entryNodeId);
-  engine.initializeFailures();
-  engine.initializeAutoscaling();
-  engine.run();
+function runToEnd(session: SimulationSession, entryNodeId: string): void {
+  session.run(entryNodeId);
 }
 
 /** Builds a two-hop client → api → db graph with healthy, responsive nodes. */
@@ -216,8 +219,8 @@ describe("LatencyHistogram", () => {
 describe("SimulationMetrics", () => {
   it("returns a zero-safe snapshot for an empty simulation", () => {
     const graph = buildPipelineGraph();
-    const { runtime, engine } = createFixture(graph, { requestsPerSecond: 0 });
-    runToEnd(runtime, engine, "client");
+    const { runtime, session } = createFixture(graph, { requestsPerSecond: 0 });
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -312,11 +315,11 @@ describe("SimulationMetrics", () => {
 
   it("reports completed traffic, processing and end-to-end latency for a two-hop pipeline", () => {
     const graph = buildPipelineGraph();
-    const { runtime, engine } = createFixture(graph, {
+    const { runtime, session } = createFixture(graph, {
       durationMs: 1000,
       requestsPerSecond: 10,
     });
-    runToEnd(runtime, engine, "client");
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -417,8 +420,8 @@ describe("SimulationMetrics", () => {
       edges: [edge("client", "svc")],
     };
 
-    const { runtime, engine } = createFixture(graph);
-    runToEnd(runtime, engine, "client");
+    const { runtime, session } = createFixture(graph);
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -453,8 +456,8 @@ describe("SimulationMetrics", () => {
       edges: [edge("client", "svc", { packetLossRate: 1 })],
     };
 
-    const { runtime, engine } = createFixture(graph);
-    runToEnd(runtime, engine, "client");
+    const { runtime, session } = createFixture(graph);
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -650,12 +653,12 @@ describe("SimulationMetrics", () => {
       ],
       edges: [edge("client", "cache")],
     };
-    const { runtime, engine } = createFixture(graph, {
+    const { runtime, session } = createFixture(graph, {
       durationMs: 1000,
       requestsPerSecond: 10,
       cacheKeys: ["GET:/users/1"],
     });
-    runToEnd(runtime, engine, "client");
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -687,12 +690,12 @@ describe("SimulationMetrics", () => {
       ],
       edges: [edge("client", "db")],
     };
-    const { runtime, engine } = createFixture(graph, {
+    const { runtime, session } = createFixture(graph, {
       durationMs: 1000,
       requestsPerSecond: 10,
       databaseOperations: ["read", "write"],
     });
-    runToEnd(runtime, engine, "client");
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 
@@ -718,12 +721,12 @@ describe("SimulationMetrics", () => {
   it("is deterministic for the same seed and architecture", () => {
     const run = () => {
       const graph = buildPipelineGraph();
-      const { runtime, engine } = createFixture(graph, {
+      const { runtime, session } = createFixture(graph, {
         durationMs: 1000,
         requestsPerSecond: 10,
         seed: 42,
       });
-      runToEnd(runtime, engine, "client");
+      runToEnd(session, "client");
       return runtime.getMetrics();
     };
 
@@ -740,7 +743,7 @@ describe("SimulationMetrics", () => {
       ],
       edges: [edge("client", "svc")],
     };
-    const { runtime: otherRuntime, engine: otherEngine } = createFixture(
+    const { runtime: otherRuntime, session: otherSession } = createFixture(
       randomGraph,
       {
         durationMs: 1000,
@@ -748,7 +751,7 @@ describe("SimulationMetrics", () => {
         seed: 43,
       },
     );
-    runToEnd(otherRuntime, otherEngine, "client");
+    runToEnd(otherSession, "client");
 
     expect(JSON.stringify(otherRuntime.getMetrics())).not.toBe(
       JSON.stringify(first),
@@ -757,8 +760,8 @@ describe("SimulationMetrics", () => {
 
   it("produces deeply frozen snapshots that callers cannot mutate", () => {
     const graph = buildPipelineGraph();
-    const { runtime, engine } = createFixture(graph);
-    runToEnd(runtime, engine, "client");
+    const { runtime, session } = createFixture(graph);
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics() as SimulationMetrics;
 
@@ -776,8 +779,10 @@ describe("SimulationMetrics", () => {
 
   it("returns a zeroed snapshot when metrics collection is disabled", () => {
     const graph = buildPipelineGraph();
-    const { runtime, engine } = createFixture(graph, { collectMetrics: false });
-    runToEnd(runtime, engine, "client");
+    const { runtime, session } = createFixture(graph, {
+      collectMetrics: false,
+    });
+    runToEnd(session, "client");
 
     const metrics = runtime.getMetrics();
 

@@ -2365,13 +2365,7 @@ describe("error rate failure lifecycle", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     runtime.createRequest({
       id: "request-1",
@@ -2715,13 +2709,7 @@ describe("error rate failure lifecycle", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // Failed attempts must never increment the component's active count.
     const incrementSpy = vi.spyOn(runtime, "incrementActiveRequests");
@@ -2771,13 +2759,7 @@ describe("error rate failure lifecycle", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // Attempt 1 fails, the retry succeeds.
     vi.spyOn(runtime.random, "next")
@@ -2859,13 +2841,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // The traffic generator creates the request before request.created fires.
     runtime.createRequest({
@@ -2979,17 +2955,11 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // The traffic generator populates the request, and the processor then
     // consumes the request.created event it scheduled — Change 1 end-to-end.
-    engine.initializeTraffic("client");
+    new TrafficGenerator(runtime).generate("client");
     engine.run();
 
     expect(runtime.eventQueue.isEmpty()).toBe(true);
@@ -3010,13 +2980,7 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     const getRoutingStrategySpy = vi.spyOn(runtime, "getRoutingStrategy");
 
@@ -3072,15 +3036,9 @@ describe("SimulationEngine with DefaultEventProcessor", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
-    engine.initializeFailures();
+    new FailureScheduler(runtime).schedule();
 
     // req-1 completes through api before the failure; req-2 is routed into api
     // during the failure window; req-3 arrives after api has recovered.
@@ -3141,13 +3099,7 @@ describe("request queueing", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     const eventTypes: string[] = [];
 
@@ -3258,13 +3210,7 @@ describe("request queueing", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     const completed: string[] = [];
 
@@ -3320,13 +3266,7 @@ describe("request queueing", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // effectiveConcurrency = 2 replicas * 2 concurrency = 4.
     for (const id of ["A", "B", "C", "D", "E"]) {
@@ -3377,13 +3317,7 @@ describe("request queueing", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     // All random rolls produce failures (0.4 < errorRate 1.0).
     vi.spyOn(runtime.random, "next").mockReturnValue(0.4);
@@ -3450,13 +3384,7 @@ describe("request queueing", () => {
       new AutoscalingController(runtime),
       new AutoscalingScheduler(runtime),
     );
-    const engine = new SimulationEngine(
-      runtime,
-      processor,
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, processor);
 
     const effectiveConcurrency = runtime.getEffectiveConcurrency("api");
 

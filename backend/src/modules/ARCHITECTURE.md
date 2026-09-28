@@ -27,6 +27,9 @@ Simulation Queue
 Simulation Worker
    │
    ▼
+Simulation Session (prepares load/failures/autoscaling)
+   │
+   ▼
 Simulation Engine
 ```
 
@@ -166,19 +169,29 @@ The Simulation module orchestrates execution; it does not contain the simulation
 
 **Responsibility**
 
-- Execute deterministic simulations.
+- Coordinate simulation execution: drive the runtime's event queue and clock
+  through an event processor, which applies events to simulation state.
 - Maintain simulation time.
 - Schedule and process simulation events.
-- Execute component behavior.
-- Generate metrics and simulation events.
+- Own no simulation state and no event semantics — those belong to the runtime
+  and the event processor.
+
+**What the engine does not do**
+
+- Traffic generation, failure scheduling, and autoscaling initialization are
+  **separate concerns**. They are composed by a `SimulationSession` (orchestrating
+  `TrafficGenerator` + `FailureScheduler` + `AutoscalingScheduler`) ahead of the
+  engine's execution, never embedded in the engine itself.
 
 **Core interfaces**
 
-- `SimulationEngine`
+- `SimulationEngine` — execution coordinator (start/step/pause/resume/cancel/run).
+- `SimulationSession` — composes setup (load, failures, autoscaling) with the engine.
 - `SimulationClock`
 - `EventQueue`
-- `SimulationComponent`
-- `MetricsCollector`
+- `EventProcessor`
+- `SimulationRuntime`
+- `TrafficGenerator` / `FailureScheduler` / `AutoscalingScheduler`
 
 **Dependencies**
 
@@ -204,7 +217,7 @@ The engine should be executable independently of the API.
 
 - Consume simulation jobs.
 - Load required simulation data.
-- Construct and execute the `SimulationEngine`.
+- Construct the `SimulationSession` and execute the simulation.
 - Persist simulation progress/results.
 - Report failures and completion.
 
@@ -212,6 +225,7 @@ The engine should be executable independently of the API.
 
 - `SimulationQueue`
 - `SimulationService`
+- `SimulationSession`
 - `SimulationEngine`
 
 **Dependencies**
@@ -222,7 +236,7 @@ The engine should be executable independently of the API.
 - Simulation domain
 
 ```text
-Queue → Worker → Engine → Results
+Queue → Worker → Session (Engine) → Results
 ```
 
 ---
@@ -287,6 +301,9 @@ Architecture ─────► Scenario
              │
              ▼
       Simulation Worker
+             │
+             ▼
+      Simulation Session
              │
              ▼
       Simulation Engine

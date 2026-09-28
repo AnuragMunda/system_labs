@@ -4,29 +4,25 @@
  * @description The simulation orchestrator. It drives a `SimulationRuntime`'s
  * event queue and clock to execute a simulation, but owns no state of its own
  * and knows nothing about what events mean — event semantics are the injected
- * processor's responsibility.
+ * processor's responsibility, and setup (traffic generation, failure
+ * scheduling, autoscaling initialization) is a separate concern composed by a
+ * `SimulationSession`.
  */
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { EventProcessor } from "../utils/types.js";
 import { SimulationRuntime } from "./simulation-runtime.js";
-import { TrafficGenerator } from "../initializers/traffic-generator.js";
-import { FailureScheduler } from "../initializers/failure-scheduler.js";
-import { AutoscalingScheduler } from "../autoscaling/autoscaling-scheduler.js";
 
 /**
  * Orchestrates how a simulation executes: it reads the runtime's state (its
  * event queue and clock) to run each event, answering "how do I execute the
  * simulation?" while leaving "what state does it currently have?" to the
- * runtime. The engine stays agnostic of event semantics.
+ * runtime. The engine stays agnostic of event semantics and scenario setup.
  */
 export class SimulationEngine {
   constructor(
     private readonly runtime: SimulationRuntime,
     private readonly eventProcessor: EventProcessor,
-    private readonly trafficGenerator: TrafficGenerator,
-    private readonly failureScheduler: FailureScheduler,
-    private readonly autoscalingScheduler: AutoscalingScheduler,
   ) {}
 
   /** Queues an event onto the runtime for future processing. */
@@ -150,58 +146,6 @@ export class SimulationEngine {
 
     this.runtime.simulation.status = "cancelled";
     this.runtime.simulation.completedAt = new Date();
-  }
-
-  /**
-   * Pre-generates the simulation's initial request load for the given source
-   * node, delegating to the traffic generator. It must be called while the
-   * simulation is still `created`: it only populates the runtime's requests
-   * and event queue and does not advance the clock or change the status.
-   *
-   * @throws If the simulation is not currently `created`.
-   */
-  initializeTraffic(sourceNodeId: string): void {
-    if (this.runtime.simulation.status !== "created") {
-      throw new Error(
-        `Traffic cannot be initialized from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.trafficGenerator.generate(sourceNodeId);
-  }
-
-  /**
-   * Queues the configured component failures (and recoveries) as events on the
-   * runtime. Like {@link initializeTraffic}, it must be called while the
-   * simulation is still `created`: it only populates the event queue and does
-   * not advance the clock or change the status.
-   *
-   * @throws If the simulation is not currently `created`.
-   */
-  initializeFailures(): void {
-    if (this.runtime.simulation.status !== "created") {
-      throw new Error(
-        `Failures cannot be initialized from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.failureScheduler.schedule();
-  }
-
-  /**
-   * Queues the initial autoscaling evaluations for all autoscaling-enabled
-   * components.
-   *
-   * Must be called while the simulation is still created.
-   */
-  initializeAutoscaling(): void {
-    if (this.runtime.simulation.status !== "created") {
-      throw new Error(
-        `Autoscaling cannot be initialized from status ${this.runtime.simulation.status}`,
-      );
-    }
-
-    this.autoscalingScheduler.schedule();
   }
 
   /**

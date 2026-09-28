@@ -1,8 +1,5 @@
 import { SimulationEngine } from "@/simulation-engine/core/simulation-engine.js";
 import { SimulationRuntime } from "@/simulation-engine/core/simulation-runtime.js";
-import { TrafficGenerator } from "@/simulation-engine/initializers/traffic-generator.js";
-import { FailureScheduler } from "@/simulation-engine/initializers/failure-scheduler.js";
-import { AutoscalingScheduler } from "@/simulation-engine/autoscaling/autoscaling-scheduler.js";
 import { RoundRobinStrategy } from "@/simulation-engine/routing/round-robin-strategy.js";
 import { RandomStrategy } from "@/simulation-engine/routing/random-strategy.js";
 import { LeastConnectionsStrategy } from "@/simulation-engine/routing/least-connections-strategy.js";
@@ -55,13 +52,7 @@ function createFixture() {
   const simulation = createSimulation();
   const runtime = new SimulationRuntime(simulation);
   const eventProcessor = { process: vi.fn() };
-  const engine = new SimulationEngine(
-    runtime,
-    eventProcessor,
-    new TrafficGenerator(runtime),
-    new FailureScheduler(runtime),
-    new AutoscalingScheduler(runtime),
-  );
+  const engine = new SimulationEngine(runtime, eventProcessor);
 
   return { simulation, runtime, engine, eventProcessor };
 }
@@ -859,13 +850,7 @@ describe("SimulationEngine", () => {
   it("should throw when a failed simulation is started", () => {
     const simulation = createSimulation({ status: "failed" });
     const runtime = new SimulationRuntime(simulation);
-    const engine = new SimulationEngine(
-      runtime,
-      { process: vi.fn() },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
     expect(() => engine.run()).toThrow(
       "Simulation cannot be started from status failed",
@@ -875,13 +860,7 @@ describe("SimulationEngine", () => {
   it("should throw when a cancelled simulation is started", () => {
     const simulation = createSimulation({ status: "cancelled" });
     const runtime = new SimulationRuntime(simulation);
-    const engine = new SimulationEngine(
-      runtime,
-      { process: vi.fn() },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
     expect(() => engine.run()).toThrow(
       "Simulation cannot be started from status cancelled",
@@ -903,13 +882,7 @@ describe("SimulationEngine", () => {
     const processEvent = vi.fn(() => {
       throw new Error("Processing failed");
     });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-a", 100));
 
@@ -926,13 +899,7 @@ describe("SimulationEngine", () => {
       .mockImplementationOnce(() => {
         throw new Error("Processing failed");
       });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-1", 100));
     engine.schedule(createEvent("event-2", 200));
@@ -948,13 +915,7 @@ describe("SimulationEngine", () => {
     const processEvent = vi.fn(() => {
       throw new Error("Processing failed");
     });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-a", 100));
 
@@ -997,13 +958,7 @@ describe("SimulationEngine", () => {
     const processEvent = vi.fn(() => {
       throw new Error("Processing failed");
     });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-a", 100));
 
@@ -1022,13 +977,7 @@ describe("SimulationEngine", () => {
       const processEvent = vi.fn().mockImplementation(() => {
         vi.advanceTimersByTime(5);
       });
-      const engine = new SimulationEngine(
-        runtime,
-        { process: processEvent },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
+      const engine = new SimulationEngine(runtime, { process: processEvent });
 
       engine.schedule(createEvent("event-a", 100));
       engine.run();
@@ -1140,13 +1089,7 @@ describe("SimulationEngine", () => {
     const processEvent = vi.fn(() => {
       throw new Error("Processing failed");
     });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-a", 100));
 
@@ -1306,13 +1249,7 @@ describe("SimulationEngine", () => {
     (status) => {
       const simulation = createSimulation({ status });
       const runtime = new SimulationRuntime(simulation);
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
       expect(() => engine.pause()).toThrow(
         `Simulation cannot be paused from status ${status}`,
@@ -1325,13 +1262,7 @@ describe("SimulationEngine", () => {
     (status) => {
       const simulation = createSimulation({ status });
       const runtime = new SimulationRuntime(simulation);
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
       expect(() => engine.resume()).toThrow(
         `Simulation cannot be resumed from status ${status}`,
@@ -1344,13 +1275,7 @@ describe("SimulationEngine", () => {
     (status) => {
       const simulation = createSimulation({ status });
       const runtime = new SimulationRuntime(simulation);
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
       expect(() => engine.cancel()).toThrow(
         `Simulation cannot be cancelled from status ${status}`,
@@ -1454,13 +1379,7 @@ describe("SimulationEngine", () => {
     (status) => {
       const simulation = createSimulation({ status });
       const runtime = new SimulationRuntime(simulation);
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
+      const engine = new SimulationEngine(runtime, { process: vi.fn() });
 
       expect(() => engine.start()).toThrow(
         `Simulation cannot be started from status ${status}`,
@@ -1564,13 +1483,7 @@ describe("SimulationEngine", () => {
     const processEvent = vi.fn().mockImplementation(() => {
       runtime.schedule(createEvent("event-past", 50));
     });
-    const engine = new SimulationEngine(
-      runtime,
-      { process: processEvent },
-      new TrafficGenerator(runtime),
-      new FailureScheduler(runtime),
-      new AutoscalingScheduler(runtime),
-    );
+    const engine = new SimulationEngine(runtime, { process: processEvent });
 
     engine.schedule(createEvent("event-a", 100));
 
@@ -1593,155 +1506,5 @@ describe("SimulationEngine", () => {
     expect(runtime.simulation.status).toBe("completed");
     expect(runtime.eventQueue.size()).toBe(2);
     expect(runtime.eventQueue.peek()?.timestampMs).toBe(1000);
-  });
-
-  describe("initializeTraffic", () => {
-    it("should populate traffic without changing status or advancing the clock", () => {
-      const runtime = new SimulationRuntime(createSimulation());
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
-
-      engine.initializeTraffic("client");
-
-      expect(runtime.simulation.status).toBe("created");
-      expect(runtime.clock.now()).toBe(0);
-    });
-
-    it("should populate the runtime requests and event queue", () => {
-      const runtime = new SimulationRuntime(createSimulation());
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
-
-      engine.initializeTraffic("client");
-
-      expect(runtime.eventQueue.size()).toBe(10);
-
-      const firstEvent = runtime.eventQueue.peek();
-      expect(firstEvent?.id).toBe("simulation-1:event:request-created:0");
-      expect(firstEvent?.type).toBe("request.created");
-      expect(firstEvent?.sourceNodeId).toBe("client");
-
-      for (let i = 0; i < 10; i++) {
-        expect(runtime.getRequest(`simulation-1:request:${i}`)).toBeDefined();
-      }
-    });
-
-    it("should process the first generated event after start and step", () => {
-      const runtime = new SimulationRuntime(createSimulation());
-      const eventProcessor = { process: vi.fn() };
-      const engine = new SimulationEngine(
-        runtime,
-        eventProcessor,
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
-
-      engine.initializeTraffic("client");
-
-      engine.start();
-      engine.step();
-
-      expect(eventProcessor.process).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "simulation-1:event:request-created:0" }),
-      );
-      expect(runtime.clock.now()).toBe(0);
-      expect(runtime.simulation.status).toBe("running");
-      expect(runtime.eventQueue.size()).toBe(9);
-    });
-
-    it.each(["running", "paused", "completed", "failed", "cancelled"])(
-      "should throw when traffic is initialized from status %s",
-      (status) => {
-        const runtime = new SimulationRuntime(createSimulation({ status }));
-        const engine = new SimulationEngine(
-          runtime,
-          { process: vi.fn() },
-          new TrafficGenerator(runtime),
-          new FailureScheduler(runtime),
-          new AutoscalingScheduler(runtime),
-        );
-
-        expect(() => engine.initializeTraffic("client")).toThrow(
-          `Traffic cannot be initialized from status ${status}`,
-        );
-      },
-    );
-  });
-
-  describe("initializeFailures", () => {
-    it("should queue failure events without changing status or advancing the clock", () => {
-      const simulation = createSimulation({
-        architectureSnapshot: {
-          nodes: [
-            {
-              id: "api",
-              type: "api",
-              name: "api",
-              position: { x: 0, y: 0 },
-              config: {},
-            },
-          ],
-          edges: [],
-        },
-      });
-      simulation.config = {
-        ...simulation.config,
-        // Recovery is config-driven (recoveryDelayMs); failures only schedule
-        // the initial component.failed event.
-        failures: [{ nodeId: "api", failedAtMs: 50 }],
-      };
-
-      const runtime = new SimulationRuntime(simulation);
-      const engine = new SimulationEngine(
-        runtime,
-        { process: vi.fn() },
-        new TrafficGenerator(runtime),
-        new FailureScheduler(runtime),
-        new AutoscalingScheduler(runtime),
-      );
-
-      engine.initializeFailures();
-
-      expect(runtime.simulation.status).toBe("created");
-      expect(runtime.clock.now()).toBe(0);
-      expect(runtime.eventQueue.size()).toBe(1);
-
-      const failed = runtime.eventQueue.dequeue();
-
-      expect(failed).toMatchObject({
-        type: "component.failed",
-        timestampMs: 50,
-        sourceNodeId: "api",
-      });
-    });
-
-    it.each(["running", "paused", "completed", "failed", "cancelled"])(
-      "should throw when failures are initialized from status %s",
-      (status) => {
-        const runtime = new SimulationRuntime(createSimulation({ status }));
-        const engine = new SimulationEngine(
-          runtime,
-          { process: vi.fn() },
-          new TrafficGenerator(runtime),
-          new FailureScheduler(runtime),
-          new AutoscalingScheduler(runtime),
-        );
-
-        expect(() => engine.initializeFailures()).toThrow(
-          `Failures cannot be initialized from status ${status}`,
-        );
-      },
-    );
   });
 });
