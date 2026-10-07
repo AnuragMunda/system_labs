@@ -739,6 +739,118 @@ describe("SimulationRuntime", () => {
       expect(runtime.getRecoveryGeneration("api")).toBe(0);
     });
   });
+
+  describe("reset restoration", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        {
+          id: "lb",
+          type: "load_balancer",
+          name: "lb",
+          position: { x: 0, y: 0 },
+          config: { routingStrategy: "round_robin" },
+        },
+        {
+          id: "api",
+          type: "api",
+          name: "api",
+          position: { x: 0, y: 0 },
+          config: {
+            replicas: 2,
+            concurrency: 2,
+            autoscaling: { enabled: true, min: 1, max: 8, targetCpu: 50 },
+          },
+        },
+        {
+          id: "api2",
+          type: "api",
+          name: "api2",
+          position: { x: 0, y: 0 },
+          config: { concurrency: 1 },
+        },
+      ],
+      edges: [
+        { id: "lb-api", source: "lb", target: "api", config: {} },
+        { id: "lb-api2", source: "lb", target: "api2", config: {} },
+      ],
+    };
+
+    function createRuntime(): SimulationRuntime {
+      return new SimulationRuntime(
+        createSimulation({ architectureSnapshot: graph }),
+      );
+    }
+
+    it("should restore lifecycle status and clear completedAt after a completed run", () => {
+      const { runtime, engine } = createFixture();
+
+      engine.schedule(createEvent("event-a", 100));
+      engine.run();
+
+      expect(runtime.simulation.status).toBe("completed");
+      expect(runtime.simulation.completedAt).toBeDefined();
+
+      runtime.simulation.currentTimeMs = 100;
+      runtime.reset();
+
+      expect(runtime.simulation.status).toBe("created");
+      expect(runtime.simulation.completedAt).toBeUndefined();
+      expect(runtime.simulation.currentTimeMs).toBe(0);
+
+      // The rewound simulation is runnable again.
+      engine.schedule(createEvent("event-b", 50));
+      engine.run();
+
+      expect(runtime.simulation.status).toBe("completed");
+    });
+
+    it("should restore configured replicas after an autoscaling change", () => {
+      const runtime = createRuntime();
+
+      runtime.setComponentReplicas("api", 6);
+
+      expect(runtime.getComponent("api").replicas).toBe(6);
+      expect(runtime.getComponent("api").effectiveConcurrency).toBe(12);
+
+      runtime.reset();
+
+      expect(runtime.getComponent("api").replicas).toBe(2);
+      expect(runtime.getComponent("api").effectiveConcurrency).toBe(4);
+    });
+
+    it("should restore the metrics snapshot to the fresh-runtime baseline", () => {
+      const baseline = createRuntime();
+      const runtime = createRuntime();
+
+      runtime.clock.advanceTo(120);
+      runtime.recordNetworkTransmission(true, 15);
+      runtime.recordNetworkTransmission(false, 15);
+      runtime.recordRequestFailure("timeout", "api");
+      runtime.recordRetry("api");
+      runtime.recordProcessedRequest("api");
+      runtime.recordDatabaseOperation("api", "write");
+
+      runtime.reset();
+
+      expect(runtime.getMetrics()).toEqual(baseline.getMetrics());
+    });
+
+    it("should restart round-robin routing from the first edge after reset", () => {
+      const runtime = createRuntime();
+      const edges = runtime.topology.getOutgoingEdges("lb");
+
+      const select = () =>
+        runtime
+          .getRoutingStrategy("lb")
+          .selectEdge(edges, runtime.getRoutingContext("lb", "req")).target;
+
+      expect([select(), select(), select()]).toEqual(["api", "api2", "api"]);
+
+      runtime.reset();
+
+      expect([select(), select(), select()]).toEqual(["api", "api2", "api"]);
+    });
+  });
 });
 
 describe("SimulationEngine", () => {

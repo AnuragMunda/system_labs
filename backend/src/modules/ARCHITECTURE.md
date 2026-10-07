@@ -184,6 +184,9 @@ The Simulation module orchestrates execution; it does not contain the simulation
   `running → paused/completed/failed/cancelled`, `paused → running/cancelled`.
 - Terminal states (`completed`, `failed`, `cancelled`) never transition again;
   a `step()` whose event processing throws marks the simulation `failed`.
+- The one exception is `reset`, a rewind (not a transition): it is allowed
+  from every status, returns the simulation to `created`, and clears
+  `completedAt` so `run → reset → run` replays the same inputs deterministically.
 
 **What the engine does not do**
 

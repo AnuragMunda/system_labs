@@ -37,6 +37,7 @@ const ACTIONS: readonly LifecycleAction[] = [
   "cancel",
   "complete",
   "fail",
+  "reset",
 ];
 
 /** The status each action resolves to, when the transition is allowed. */
@@ -47,6 +48,7 @@ const EXPECTED_AFTER: Partial<Record<LifecycleAction, SimulationStatus>> = {
   cancel: "cancelled",
   complete: "completed",
   fail: "failed",
+  reset: "created",
 };
 
 const REJECTION_VERB: Record<LifecycleAction, string> = {
@@ -58,6 +60,7 @@ const REJECTION_VERB: Record<LifecycleAction, string> = {
   cancel: "cancelled",
   complete: "completed",
   fail: "failed",
+  reset: "reset",
 };
 
 function createSimulation(status: SimulationStatus): Simulation {
@@ -160,5 +163,20 @@ describe("SimulationLifecycle", () => {
     const stepSimulation = createSimulation("running");
     transitionSimulationStatus(stepSimulation, "step");
     expect(stepSimulation.status).toBe("running");
+  });
+
+  it("allows reset from every status, including terminal ones", () => {
+    for (const status of STATUSES) {
+      const simulation = createSimulation(status);
+      simulation.completedAt = new Date();
+
+      expect(
+        () => transitionSimulationStatus(simulation, "reset"),
+        `reset should be allowed from ${status}`,
+      ).not.toThrow();
+
+      expect(simulation.status).toBe("created");
+      expect(simulation.completedAt).toBeUndefined();
+    }
   });
 });

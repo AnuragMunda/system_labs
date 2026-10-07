@@ -21,7 +21,8 @@ export type LifecycleAction =
   | "resume"
   | "cancel"
   | "complete"
-  | "fail";
+  | "fail"
+  | "reset";
 
 /** The status each action may be invoked from, mirroring the transition matrix. */
 const ALLOWED_FROM: Record<LifecycleAction, readonly SimulationStatus[]> = {
@@ -40,6 +41,10 @@ const ALLOWED_FROM: Record<LifecycleAction, readonly SimulationStatus[]> = {
   complete: ["running"],
   // Internal: a processing failure while the simulation is not yet terminal.
   fail: ["created", "running", "paused"],
+  // Reset is a rewind, not a transition: it is the single action allowed from
+  // every status (including terminal ones), returning the simulation to
+  // `created` so the same inputs can be executed again.
+  reset: ["created", "running", "paused", "completed", "failed", "cancelled"],
 };
 
 /** The status an action resolves to, or `undefined` when the action does not move status. */
@@ -52,6 +57,7 @@ const TARGET_STATUS: Record<LifecycleAction, SimulationStatus | undefined> = {
   cancel: "cancelled",
   complete: "completed",
   fail: "failed",
+  reset: "created",
 };
 
 /** The past participle used in rejection messages, per action. */
@@ -64,6 +70,9 @@ const VERB: Record<LifecycleAction, string> = {
   cancel: "cancelled",
   complete: "completed",
   fail: "failed",
+  // Unreachable: reset is allowed from every status. The key exists to keep
+  // the verb table total.
+  reset: "reset",
 };
 
 /**
@@ -105,6 +114,12 @@ export function transitionSimulationStatus(
 
   if (action === "cancel" || action === "complete" || action === "fail") {
     simulation.completedAt = new Date();
+  }
+
+  // A rewind drops the previous run's terminal timestamp; the next start
+  // restamps `startedAt`, so only `completedAt` needs clearing here.
+  if (action === "reset") {
+    simulation.completedAt = undefined;
   }
 }
 

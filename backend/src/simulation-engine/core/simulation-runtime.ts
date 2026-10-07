@@ -10,6 +10,7 @@
 import { Simulation } from "@/domain/simulation/simulation.types.js";
 import { SimulationClock } from "./simulation-clock.js";
 import { EventQueue } from "./event-queue.js";
+import { transitionSimulationStatus } from "./simulation-lifecycle.js";
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
 import { SimulationRequest } from "@/domain/simulation/request.types.js";
 import { ArchitectureTopology } from "../topology/architecture-topology.js";
@@ -1112,8 +1113,23 @@ export class SimulationRuntime {
     }
   }
 
-  /** Resets the simulation runtime to its initial state. */
+  /**
+   * Rewinds the runtime to its initial state so the same simulation can be
+   * executed again: `run → reset → run` must produce the same result as a
+   * fresh runtime running the same seed and inputs.
+   *
+   * Restores the clock, event queue (including its sequence counter), request
+   * and component maps, per-component queues, caches, routing strategies, the
+   * metrics store, and the seeded PRNG. Lifecycle fields rewind through the
+   * state machine (`reset` is the one action allowed from every status) and
+   * the domain progress cursor returns to zero. `startedAt` is left alone —
+   * the next `start()` restamps it.
+   */
   reset(): void {
+    transitionSimulationStatus(this.simulation, "reset");
+
+    this.simulation.currentTimeMs = 0;
+
     this.clock.reset();
     this.eventQueue.clear();
 
