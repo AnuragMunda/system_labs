@@ -158,4 +158,113 @@ describe("EventQueue", () => {
     expect(queue.dequeue()?.id).toBe("after-clear-1");
     expect(queue.dequeue()?.id).toBe("after-clear-2");
   });
+
+  it("should break ties by insertion order, not by event type or id", () => {
+    const queue = new EventQueue();
+
+    const processingCompleted: SimulationEvent = {
+      id: "zzz-processing-completed",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "request.processing_completed",
+    };
+    const autoscalingEvaluate: SimulationEvent = {
+      id: "aaa-autoscaling-evaluate",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "autoscaling.evaluate",
+    };
+    const queueDrain: SimulationEvent = {
+      id: "mmm-queue-drain",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "queue.drain",
+    };
+
+    queue.enqueue(processingCompleted);
+    queue.enqueue(autoscalingEvaluate);
+    queue.enqueue(queueDrain);
+
+    // The ids sort in the opposite order of insertion (aaa < mmm < zzz) and
+    // the types carry no ordering meaning: only the insertion sequence may
+    // decide which of these same-timestamp events runs first.
+    expect(queue.dequeue()).toBe(processingCompleted);
+    expect(queue.dequeue()).toBe(autoscalingEvaluate);
+    expect(queue.dequeue()).toBe(queueDrain);
+  });
+
+  it("should keep insertion order for ties across interleaved enqueues and dequeues", () => {
+    const queue = new EventQueue();
+
+    queue.enqueue(createEvent("first", 50));
+    queue.enqueue(createEvent("second", 50));
+    queue.enqueue(createEvent("early", 10));
+
+    // Pop the early event so the heap sifts before more ties arrive.
+    expect(queue.dequeue()?.id).toBe("early");
+
+    queue.enqueue(createEvent("third", 50));
+    queue.enqueue(createEvent("late", 200));
+    queue.enqueue(createEvent("fourth", 50));
+
+    // Re-enqueue an already seen timestamp after the heap has restructured.
+    queue.enqueue(createEvent("fifth", 50));
+
+    const result: string[] = [];
+
+    while (!queue.isEmpty()) {
+      result.push(queue.dequeue()!.id);
+    }
+
+    expect(result).toEqual([
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "fifth",
+      "late",
+    ]);
+  });
+
+  it("should keep assigning strictly increasing sequences to same-timestamp events", () => {
+    const queue = new EventQueue();
+
+    queue.enqueue(createEvent("seed", 10));
+    expect(queue.dequeue()?.id).toBe("seed");
+
+    for (let i = 0; i < 100; i++) {
+      queue.enqueue(createEvent(`event-${i}`, 100));
+    }
+
+    const result: string[] = [];
+
+    while (!queue.isEmpty()) {
+      result.push(queue.dequeue()!.id);
+    }
+
+    expect(result).toEqual(Array.from({ length: 100 }, (_, i) => `event-${i}`));
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "should reject a non-finite timestamp of %s",
+    (timestampMs) => {
+      const queue = new EventQueue();
+
+      expect(() => queue.enqueue(createEvent("bad", timestampMs))).toThrow(
+        "Event timestamp must be a finite, non-negative number",
+      );
+      expect(queue.isEmpty()).toBe(true);
+    },
+  );
+
+  it("should reject a negative timestamp", () => {
+    const queue = new EventQueue();
+
+    queue.enqueue(createEvent("valid", 100));
+
+    expect(() => queue.enqueue(createEvent("bad", -1))).toThrow(
+      "Event timestamp must be a finite, non-negative number",
+    );
+    expect(queue.size()).toBe(1);
+  });
 });

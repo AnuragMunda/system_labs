@@ -216,6 +216,38 @@ describe("SimulationSession", () => {
       (engine as unknown as Record<string, unknown>).initializeAutoscaling,
     ).toBeUndefined();
   });
+
+  it("produces an identical event sequence across two runs with the same seed and snapshot", () => {
+    const graph = createGraph({
+      autoscaling: { enabled: true, min: 1, max: 10, targetCpu: 50 },
+      failures: [{ nodeId: "api", failedAtMs: 50 }],
+    });
+
+    const firstRun = captureProcessedEvents(
+      createSimulation({
+        seed: 1337,
+        durationMs: 3000,
+        requestsPerSecond: 50,
+        graph,
+        failures: [{ nodeId: "api", failedAtMs: 50 }],
+      }),
+    );
+
+    const secondRun = captureProcessedEvents(
+      createSimulation({
+        seed: 1337,
+        durationMs: 3000,
+        requestsPerSecond: 50,
+        graph,
+        failures: [{ nodeId: "api", failedAtMs: 50 }],
+      }),
+    );
+
+    // Ordering is part of the contract: same seed + same snapshot must replay
+    // the exact same (type, timestamp) sequence, including every tie-break.
+    expect(firstRun.length).toBeGreaterThan(0);
+    expect(secondRun).toEqual(firstRun);
+  });
 });
 
 /** Pops every queued event, returning them in processing order. */
@@ -233,4 +265,32 @@ function drainEvents(runtime: SimulationRuntime): SimulationEvent[] {
   }
 
   return events;
+}
+
+/**
+ * Runs a fresh session to completion and returns the processed event stream as
+ * ordered `(type, timestampMs)` pairs — the externally observable ordering of
+ * a run, independent of generated event ids.
+ */
+function captureProcessedEvents(
+  simulation: Simulation,
+): { type: SimulationEvent["type"]; timestampMs: number }[] {
+  const processed: { type: SimulationEvent["type"]; timestampMs: number }[] =
+    [];
+  const original = DefaultEventProcessor.prototype.process;
+
+  vi.spyOn(DefaultEventProcessor.prototype, "process").mockImplementation(
+    function (event: SimulationEvent) {
+      processed.push({ type: event.type, timestampMs: event.timestampMs });
+      original.call(this, event);
+    },
+  );
+
+  try {
+    createSession(simulation).session.run("client");
+  } finally {
+    vi.restoreAllMocks();
+  }
+
+  return processed;
 }

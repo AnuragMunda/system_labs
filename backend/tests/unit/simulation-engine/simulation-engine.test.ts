@@ -1554,4 +1554,80 @@ describe("SimulationEngine", () => {
     expect(runtime.eventQueue.size()).toBe(2);
     expect(runtime.eventQueue.peek()?.timestampMs).toBe(1000);
   });
+
+  it("should process mixed event types sharing a timestamp in insertion order", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    const processingCompleted: SimulationEvent = {
+      id: "event-zzz",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "request.processing_completed",
+    };
+    const autoscalingEvaluate: SimulationEvent = {
+      id: "event-aaa",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "autoscaling.evaluate",
+    };
+    const queueDrain: SimulationEvent = {
+      id: "event-mmm",
+      simulationId: "simulation-1",
+      timestampMs: 100,
+      type: "queue.drain",
+    };
+
+    engine.schedule(processingCompleted);
+    engine.schedule(autoscalingEvaluate);
+    engine.schedule(queueDrain);
+
+    engine.run();
+
+    const processed = eventProcessor.process.mock.calls.map(([event]) => event);
+
+    // Ids sort opposite to insertion and the types differ: only insertion
+    // order through the queue decides the sequence. All three share t=100,
+    // so the clock must land on 100 for every one of them.
+    expect(processed.map((event) => event.id)).toEqual([
+      "event-zzz",
+      "event-aaa",
+      "event-mmm",
+    ]);
+    expect(processed.map((event) => event.type)).toEqual([
+      "request.processing_completed",
+      "autoscaling.evaluate",
+      "queue.drain",
+    ]);
+    expect(processed.every((event) => event.timestampMs === 100)).toBe(true);
+    expect(runtime.currentTimeMs).toBe(100);
+  });
+
+  it("should process a same-timestamp event scheduled mid-run after all pre-queued peers", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    eventProcessor.process.mockImplementation((event) => {
+      if (event.id === "event-a") {
+        // Scheduled while t=100 events are still queued: its sequence must
+        // exceed theirs, so it runs after them even at the same timestamp.
+        runtime.schedule(createEvent("event-dynamically-scheduled", 100));
+      }
+    });
+
+    engine.schedule(createEvent("event-a", 100));
+    engine.schedule(createEvent("event-b", 100));
+    engine.schedule(createEvent("event-c", 100));
+
+    engine.run();
+
+    const processedIds = eventProcessor.process.mock.calls.map(
+      ([event]) => event.id,
+    );
+
+    expect(processedIds).toEqual([
+      "event-a",
+      "event-b",
+      "event-c",
+      "event-dynamically-scheduled",
+    ]);
+  });
 });

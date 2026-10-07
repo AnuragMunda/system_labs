@@ -5,6 +5,20 @@
  * timestamp with ties broken by insertion sequence. The simulation engine pops
  * events in chronological order from this queue as the simulation clock
  * advances; same-timestamp events are dequeued in the order they were enqueued.
+ *
+ * Ordering contract:
+ *
+ *   1. `timestampMs` ascending (the primary key).
+ *   2. For equal timestamps, insertion sequence ascending — every enqueued
+ *      event receives a monotonically increasing sequence number, so
+ *      `(timestamp=100, sequence=7)` always dequeues before
+ *      `(timestamp=100, sequence=8)`.
+ *
+ * Ordering never depends on event `id`, `type`, `payload`, object property
+ * iteration order, or any other incidental behavior: the sequence number is
+ * the sole tie-breaker. Events scheduled while processing (same-timestamp or
+ * not) receive later sequences than everything already queued, so they run
+ * after their peers — causal FIFO within a timestamp.
  */
 
 import { SimulationEvent } from "@/domain/simulation/event.types.js";
@@ -24,8 +38,20 @@ export class EventQueue {
   private events: QueuedEvent[] = [];
   private nextSequence = 0;
 
-  /** Wraps the event with the next sequence number and sifts it into place. */
+  /**
+   * Wraps the event with the next sequence number and sifts it into place.
+   *
+   * @throws {Error} If `timestampMs` is not a finite, non-negative number. A
+   *   `NaN` or `Infinity` timestamp would poison every heap comparison and
+   *   silently destroy ordering, so it is rejected at the boundary instead.
+   */
   enqueue(event: SimulationEvent): void {
+    if (!Number.isFinite(event.timestampMs) || event.timestampMs < 0) {
+      throw new Error(
+        `Event timestamp must be a finite, non-negative number. Received: ${event.timestampMs}.`,
+      );
+    }
+
     const queuedEvent: QueuedEvent = {
       event,
       sequence: this.nextSequence++,
