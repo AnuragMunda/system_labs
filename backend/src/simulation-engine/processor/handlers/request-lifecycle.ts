@@ -16,7 +16,11 @@ import {
   shouldFail,
 } from "../../utils/helpers.js";
 import { DEFAULT_REQUEST_SIZE_BYTES } from "../../utils/constants.js";
-import { getRequestId, scheduleHealthChanged } from "./event-handling.js";
+import {
+  assertRequestNotTerminal,
+  getRequestId,
+  scheduleHealthChanged,
+} from "./event-handling.js";
 import { FailureHandler } from "./failure-handling.js";
 
 /** Handlers for the `request.*` event types. */
@@ -41,7 +45,7 @@ export class RequestLifecycleHandlers {
       throw new Error("request.created event requires a sourceNodeId.");
     }
 
-    this.runtime.getRequest(requestId);
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
 
     this.runtime.updateRequest(requestId, {
       currentNodeId: event.sourceNodeId,
@@ -64,6 +68,8 @@ export class RequestLifecycleHandlers {
     if (!event.targetNodeId) {
       throw new Error("request.routed event requires a targetNodeId.");
     }
+
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
 
     const arrival = this.runtime.admitArrival(event.targetNodeId, requestId);
 
@@ -129,6 +135,8 @@ export class RequestLifecycleHandlers {
     if (!node) {
       throw new Error(`Node not found: ${event.sourceNodeId}`);
     }
+
+    assertRequestNotTerminal(request, event);
 
     // 2. Check the circuit breaker. An open circuit (or a half-open circuit
     // whose probe slot is already claimed by another request) fails the
@@ -345,6 +353,8 @@ export class RequestLifecycleHandlers {
       );
     }
 
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
+
     // Record actual latency, then free capacity and refresh health now that
     // utilization (and the latency/error history) has changed.
     const processingLatencyMs = event.timestampMs - processingStartedAtMs;
@@ -511,7 +521,7 @@ export class RequestLifecycleHandlers {
   handleCompleted(event: SimulationEvent): void {
     const requestId = getRequestId(event);
 
-    this.runtime.getRequest(requestId);
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
 
     this.runtime.updateRequest(requestId, {
       status: "completed",
@@ -529,6 +539,8 @@ export class RequestLifecycleHandlers {
 
   handleFailed(event: SimulationEvent): void {
     const requestId = getRequestId(event);
+
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
 
     const reason =
       typeof event.payload?.reason === "string"
@@ -549,6 +561,8 @@ export class RequestLifecycleHandlers {
 
   handleRetry(event: SimulationEvent): void {
     const requestId = getRequestId(event);
+
+    assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
 
     // "Retries initiated at this node" is keyed by the node whose retry policy
     // decided to retry (the retry event's source node).

@@ -7,6 +7,7 @@
  */
 
 import type { SimulationEvent } from "@/domain/simulation/event.types.js";
+import type { SimulationRequest } from "@/domain/simulation/request.types.js";
 
 import { SimulationRuntime } from "../../core/simulation-runtime.js";
 import { ComponentRuntimeState } from "../../utils/types.js";
@@ -21,6 +22,24 @@ export function getRequestId(event: SimulationEvent): string {
   }
 
   return requestId;
+}
+
+/**
+ * Enforces that a request's terminal state is sticky. Once a request is
+ * `completed` or `failed`, no later event may resurrect it or record anything
+ * against it: producers are exclusive by construction, so a violation here
+ * indicates a producer bug — failing loudly beats silently corrupting
+ * metrics, capacity, queue membership, or circuit-probe state.
+ */
+export function assertRequestNotTerminal(
+  request: SimulationRequest,
+  event: SimulationEvent,
+): void {
+  if (request.status === "completed" || request.status === "failed") {
+    throw new Error(
+      `${event.type} cannot follow a terminal state: request ${request.id} is already ${request.status}.`,
+    );
+  }
 }
 
 /**

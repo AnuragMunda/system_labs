@@ -215,6 +215,12 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - A failed component's `queue.drain` events no-op; recovery reschedules the
   drain so a non-empty queue is never stranded once the component is healthy
   again.
+- Terminal request states are sticky: only `pending`/`in-flight`/`queued`
+  requests may transition to `completed` or `failed`, and no event after a
+  terminal state may resurrect the request, record metrics against it, or
+  touch component capacity. Every request-lifecycle handler enforces this via
+  `assertRequestNotTerminal`; the duration cutoff is the one documented case
+  where a run ends with non-terminal requests.
 
 **Event scheduling & staleness**
 
@@ -247,6 +253,10 @@ The Simulation module orchestrates execution; it does not contain the simulation
   `component.health_changed`, `component.recovery_scheduled`,
   `component.circuit_opened`, `component.circuit_closed`) mutate no state;
   their handlers only validate shape.
+- `request.failed → request.retry` and `request.completed → request.retry`
+  are impossible by producer exclusivity (a failure schedules a retry _xor_ a
+  terminal failure) and are asserted at handling time: any lifecycle event
+  arriving for a terminal request throws instead of resurrecting it.
 
 **What the engine does not do**
 
