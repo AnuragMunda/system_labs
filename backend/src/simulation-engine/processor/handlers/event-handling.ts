@@ -43,6 +43,24 @@ export function assertRequestNotTerminal(
 }
 
 /**
+ * Enforces that a queued request cannot be finalized before it has been
+ * dequeued and started. `request.processing_completed` and
+ * `request.completed` imply the request actually executed, and the only way
+ * out of a queue is `queue.drain` → `request.processing_started` →
+ * `in-flight` — so a violation indicates a producer bug.
+ */
+export function assertRequestNotQueued(
+  request: SimulationRequest,
+  event: SimulationEvent,
+): void {
+  if (request.status === "queued") {
+    throw new Error(
+      `${event.type} cannot run for a queued request: request ${request.id} has not started processing.`,
+    );
+  }
+}
+
+/**
  * Schedules the component.health_changed event that makes a health transition
  * observable in the event stream.
  */

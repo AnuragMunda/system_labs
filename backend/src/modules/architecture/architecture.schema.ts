@@ -79,6 +79,15 @@ const componentConfig = z.object({
   concurrency: z.number().nonnegative().optional(),
   errorRate: z.number().min(0).max(1).optional(),
 
+  // Queue and backpressure configuration (read by the simulation engine).
+  queue: z
+    .object({
+      enabled: z.boolean().optional(),
+      maxSize: z.number().int().min(0).optional(),
+      overflowStrategy: z.enum(["reject", "drop_oldest"]).optional(),
+    })
+    .optional(),
+
   // Extended editor configuration
   replicas: z.number().int().nonnegative().optional(),
   cpu: z.number().nonnegative().optional(),

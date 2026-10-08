@@ -17,6 +17,7 @@ import {
 } from "../../utils/helpers.js";
 import { DEFAULT_REQUEST_SIZE_BYTES } from "../../utils/constants.js";
 import {
+  assertRequestNotQueued,
   assertRequestNotTerminal,
   getRequestId,
   scheduleHealthChanged,
@@ -354,6 +355,7 @@ export class RequestLifecycleHandlers {
     }
 
     assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
+    assertRequestNotQueued(this.runtime.getRequest(requestId), event);
 
     // Record actual latency, then free capacity and refresh health now that
     // utilization (and the latency/error history) has changed.
@@ -522,6 +524,7 @@ export class RequestLifecycleHandlers {
     const requestId = getRequestId(event);
 
     assertRequestNotTerminal(this.runtime.getRequest(requestId), event);
+    assertRequestNotQueued(this.runtime.getRequest(requestId), event);
 
     this.runtime.updateRequest(requestId, {
       status: "completed",

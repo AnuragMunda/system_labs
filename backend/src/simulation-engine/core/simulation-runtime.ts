@@ -930,10 +930,16 @@ export class SimulationRuntime {
       if (overflowStrategy === "drop_oldest") {
         const droppedRequestId = this.evictOldestQueuedRequest(nodeId);
 
+        // A `maxSize: 0` queue is always full and never holds a request, so
+        // there is nothing to evict. Fall back to rejecting the arrival —
+        // identical to the `reject` strategy — instead of failing the run.
         if (!droppedRequestId) {
-          throw new Error(
-            `Queue ${nodeId} reported full but contained no request.`,
-          );
+          this.recordQueueRejection(nodeId);
+
+          return {
+            admitted: false,
+            reason: "queue_full",
+          };
         }
 
         this.componentRequestQueue.enqueue(nodeId, requestId);

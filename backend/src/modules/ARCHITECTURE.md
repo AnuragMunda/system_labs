@@ -221,6 +221,11 @@ The Simulation module orchestrates execution; it does not contain the simulation
   touch component capacity. Every request-lifecycle handler enforces this via
   `assertRequestNotTerminal`; the duration cutoff is the one documented case
   where a run ends with non-terminal requests.
+- A queued request can only leave the queue via `queue.drain` →
+  `request.processing_started` (dequeued, then in-flight once capacity is
+  admitted). `request.completed` and `request.processing_completed` are
+  rejected while a request is still queued (`assertRequestNotQueued`), so a
+  request can never complete without having executed.
 
 **Event scheduling & staleness**
 
@@ -249,10 +254,11 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - `autoscaling.evaluate` forms a single chain: seeded once by
   `SimulationSession.prepare` (which runs only from `run()`), then extended
   one-for-one by `handleEvaluate`, bounded by the simulation duration.
-- Observability-only events (`queue.enqueue`, `queue.dequeue`,
-  `component.health_changed`, `component.recovery_scheduled`,
-  `component.circuit_opened`, `component.circuit_closed`) mutate no state;
-  their handlers only validate shape.
+- Observability-only events mutate no state. `component.health_changed`,
+  `component.circuit_opened`, and `component.circuit_closed` have handlers
+  that validate shape only; `queue.enqueue`, `queue.dequeue`, and
+  `component.recovery_scheduled` intentionally have no handler and are
+  ignored by the dispatcher.
 - `request.failed → request.retry` and `request.completed → request.retry`
   are impossible by producer exclusivity (a failure schedules a retry _xor_ a
   terminal failure) and are asserted at handling time: any lifecycle event

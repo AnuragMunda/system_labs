@@ -238,8 +238,17 @@ describe("terminal request states are sticky", () => {
     processor.process(lifecycleEvent("request.failed", "req-1"));
     expect(runtime.getRequest("req-1").status).toBe("failed");
 
-    createRequest(runtime, "req-2", "queued");
+    // `in-flight` is the normal pre-completion status.
+    createRequest(runtime, "req-2", "in-flight");
     processor.process(lifecycleEvent("request.completed", "req-2"));
     expect(runtime.getRequest("req-2").status).toBe("completed");
+
+    // `queued → failed` stays legal (overflow/circuit failures happen before
+    // a queued request starts); only completion-side finalization is blocked.
+    createRequest(runtime, "req-3", "queued");
+    processor.process(
+      lifecycleEvent("request.failed", "req-3", { reason: "queue_overflow" }),
+    );
+    expect(runtime.getRequest("req-3").status).toBe("failed");
   });
 });

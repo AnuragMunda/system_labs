@@ -304,6 +304,66 @@ describe("architectureSchema autoscaling config", () => {
   });
 });
 
+describe("architectureSchema queue config", () => {
+  const payloadWithQueue = (queue: unknown) => ({
+    ...validArchitecture,
+    nodes: [
+      validArchitecture.nodes[0]!,
+      {
+        ...validArchitecture.nodes[1]!,
+        config: {
+          ...validArchitecture.nodes[1]!.config,
+          queue,
+        },
+      },
+    ],
+  });
+
+  it("preserves a valid queue configuration through parsing", () => {
+    const result = architectureSchema.safeParse(
+      payloadWithQueue({
+        enabled: true,
+        maxSize: 4,
+        overflowStrategy: "drop_oldest",
+      }),
+    );
+
+    expect(result.success).toBe(true);
+
+    if (result.success) {
+      expect(result.data.nodes[1]!.config).toMatchObject({
+        queue: { enabled: true, maxSize: 4, overflowStrategy: "drop_oldest" },
+      });
+    }
+  });
+
+  it("accepts a maxSize of 0 (a queue that never waits)", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithQueue({ maxSize: 0 })).success,
+    ).toBe(true);
+  });
+
+  it("rejects an unknown overflow strategy", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithQueue({ maxSize: 1, overflowStrategy: "explode" }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a negative maxSize", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithQueue({ maxSize: -1 })).success,
+    ).toBe(false);
+  });
+
+  it("rejects a non-integer maxSize", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithQueue({ maxSize: 1.5 })).success,
+    ).toBe(false);
+  });
+});
+
 describe("updateArchitectureSchema", () => {
   it("accepts an empty object", () => {
     const result = updateArchitectureSchema.safeParse({});
