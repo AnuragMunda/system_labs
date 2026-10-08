@@ -173,7 +173,7 @@ describe("SimulationRuntime", () => {
     const runtime = new SimulationRuntime(createSimulation());
 
     expect(() => runtime.getEffectiveConcurrency("missing")).toThrow(
-      "Node not found: missing.",
+      "Component not found: missing",
     );
   });
 

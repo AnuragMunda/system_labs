@@ -188,6 +188,34 @@ The Simulation module orchestrates execution; it does not contain the simulation
   from every status, returns the simulation to `created`, and clears
   `completedAt` so `run → reset → run` replays the same inputs deterministically.
 
+**State ownership & invariants**
+
+- `SimulationRuntime` is the single source of truth: requests, components,
+  per-component queues, caches, routing strategies, metrics, clock, event
+  queue, and PRNG all live on the runtime. Event handlers and processors hold
+  no mutable state of their own.
+- `component.activeRequests` is incremented only on the processing-start path
+  after every failure check has passed, and decremented only by the matching
+  processing-completed event — the increment/decrement window is closed.
+- Queue membership and `request.status === "queued"` move together: a request
+  is removed from the queue before it starts, fails, or is evicted, and
+  `queuedAtMs` is cleared whenever a request leaves the queue.
+- `drop_oldest` eviction is not a dequeue start: evicted requests count toward
+  `totalDropped` only, never `totalDequeued` or the queue-wait histogram.
+- `component.effectiveConcurrency` is the single representation of derived
+  capacity (written at registration and by `setComponentReplicas`);
+  `getEffectiveConcurrency()` reads it rather than recomputing.
+- `simulation.currentTimeMs` mirrors the clock after every processed event so
+  the domain object's progress cursor stays truthful; `reset` zeroes it.
+- `attempts` is a shared budget across processing and network stages; both
+  stages increment it before consulting the retry policy.
+- The duration cutoff is truncating: events at or after `durationMs` are never
+  processed, so requests mid-flight keep their status and counts in the final
+  metrics snapshot.
+- A failed component's `queue.drain` events no-op; recovery reschedules the
+  drain so a non-empty queue is never stranded once the component is healthy
+  again.
+
 **What the engine does not do**
 
 - Traffic generation, failure scheduling, and autoscaling initialization are

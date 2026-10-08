@@ -40,8 +40,4 @@ export class RoundRobinStrategy implements RoutingStrategy {
 
     return selectedEdge;
   }
-
-  reset(): void {
-    this.positions.clear();
-  }
 }

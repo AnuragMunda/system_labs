@@ -142,6 +142,7 @@ export class SimulationEngine {
     }
 
     this.runtime.clock.advanceTo(event.timestampMs);
+    this.runtime.simulation.currentTimeMs = event.timestampMs;
     this.eventProcessor.process(event);
 
     return true;

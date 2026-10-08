@@ -160,6 +160,21 @@ export class ComponentLifecycleHandlers {
       previousHealth,
       "healthy",
     );
+
+    // Drains that fired while the component was failed were no-ops, so a
+    // non-empty queue would otherwise strand until unrelated traffic freed
+    // capacity. Recovery is the reconciliation point: offer the freed capacity
+    // to whatever is still queued. Skip the event when nothing is queued.
+    if (this.runtime.getQueuedRequestCount(nodeId) > 0) {
+      this.runtime.schedule(
+        createEvent({
+          simulationId: event.simulationId,
+          timestampMs: event.timestampMs,
+          type: "queue.drain",
+          sourceNodeId: nodeId,
+        }),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------

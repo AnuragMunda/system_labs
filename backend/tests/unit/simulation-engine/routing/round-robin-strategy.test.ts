@@ -84,14 +84,16 @@ describe("RoundRobinStrategy", () => {
     );
   });
 
-  it("can reset routing state", () => {
+  it("starts from the first edge when a fresh instance replaces it", () => {
     const strategy = new RoundRobinStrategy();
 
     expect(strategy.selectEdge(edges, context).id).toBe("edge-1");
     expect(strategy.selectEdge(edges, context).id).toBe("edge-2");
 
-    strategy.reset();
+    // The runtime resets routing state by recreating strategies, so a fresh
+    // instance must start from the beginning of the rotation.
+    const freshStrategy = new RoundRobinStrategy();
 
-    expect(strategy.selectEdge(edges, context).id).toBe("edge-1");
+    expect(freshStrategy.selectEdge(edges, context).id).toBe("edge-1");
   });
 });

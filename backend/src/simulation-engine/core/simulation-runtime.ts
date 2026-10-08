@@ -928,7 +928,7 @@ export class SimulationRuntime {
       }
 
       if (overflowStrategy === "drop_oldest") {
-        const droppedRequestId = this.dequeueRequest(nodeId);
+        const droppedRequestId = this.evictOldestQueuedRequest(nodeId);
 
         if (!droppedRequestId) {
           throw new Error(
@@ -974,6 +974,30 @@ export class SimulationRuntime {
       component.metrics.queueWait.record(
         this.currentTimeMs - request.queuedAtMs,
       );
+      this.updateRequest(requestId, { queuedAtMs: undefined });
+    }
+
+    return requestId;
+  }
+
+  /**
+   * Removes the oldest request from a component's queue for `drop_oldest`
+   * eviction. Unlike {@link dequeueRequest}, the removed request never starts
+   * processing, so it must not inflate `totalDequeued` or the queue-wait
+   * histogram — drops are tracked separately via `totalDropped`. The
+   * `queuedAtMs` stamp is still cleared so the failed request no longer counts
+   * as currently queued.
+   */
+  private evictOldestQueuedRequest(nodeId: string): string | undefined {
+    const requestId = this.componentRequestQueue.dequeue(nodeId);
+
+    if (requestId === undefined) {
+      return undefined;
+    }
+
+    const request = this.requests.get(requestId);
+
+    if (request?.queuedAtMs !== undefined) {
       this.updateRequest(requestId, { queuedAtMs: undefined });
     }
 
@@ -1191,11 +1215,8 @@ export class SimulationRuntime {
 
     // The stamp is only meaningful for requests the runtime actually tracks;
     // low-level queue callers may enqueue a raw id without a request record.
-    const request = this.requests.get(requestId);
-
-    if (request) {
-      this.requests.set(requestId, {
-        ...request,
+    if (this.requests.has(requestId)) {
+      this.updateRequest(requestId, {
         queuedAtMs: this.currentTimeMs,
       });
     }
@@ -1266,21 +1287,14 @@ export class SimulationRuntime {
   }
 
   /**
-   * Calculates the effective concurrency for a node based on its configuration.
-   * This is the maximum number of requests that can be processed concurrently
-   * by the node.
+   * Returns the effective concurrency for a node — the maximum number of
+   * requests the node can process concurrently. This reads the component's
+   * stored value rather than recomputing it, so the field is the single
+   * representation of derived capacity: it is written only at component
+   * registration and by {@link setComponentReplicas}.
    */
   getEffectiveConcurrency(nodeId: string): number {
-    const node = this.topology.getNode(nodeId);
-
-    if (!node) {
-      throw new Error(`Node not found: ${nodeId}.`);
-    }
-
-    const component = this.getComponent(nodeId);
-    const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
-
-    return getEffectiveConcurrency(component.replicas, concurrency);
+    return this.getComponent(nodeId).effectiveConcurrency;
   }
 
   /**

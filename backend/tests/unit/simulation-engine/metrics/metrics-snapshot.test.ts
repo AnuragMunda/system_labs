@@ -556,7 +556,7 @@ describe("SimulationMetrics", () => {
     };
     const { runtime } = createFixture(graph);
 
-    for (const id of ["request-1", "request-2", "request-3"]) {
+    for (const id of ["request-1", "request-2"]) {
       runtime.createRequest({
         id,
         status: "pending",
@@ -564,8 +564,15 @@ describe("SimulationMetrics", () => {
         attempts: 0,
       });
       runtime.enqueueRequest("api", id);
+      runtime.clock.advanceTo(id === "request-1" ? 50 : 100);
     }
-    runtime.clock.advanceTo(100);
+    runtime.createRequest({
+      id: "request-3",
+      status: "pending",
+      createdAtMs: 0,
+      attempts: 0,
+    });
+    runtime.enqueueRequest("api", "request-3");
 
     const metrics = runtime.getMetrics();
     const api = metrics.components.api;
@@ -574,13 +581,16 @@ describe("SimulationMetrics", () => {
       currentDepth: 2,
       peakDepth: 2,
       totalEnqueued: 3,
-      totalDequeued: 1,
+      totalDequeued: 0,
       totalRejected: 0,
       totalDropped: 1,
     });
+    // Eviction is not a dequeue start: the dropped request's wait must not
+    // pollute the queue-wait histogram that describes requests that started.
+    expect(api.queue.wait).toMatchObject({ count: 0, avgMs: 0, maxMs: 0 });
     expect(metrics.queues.totals).toEqual({
       enqueued: 3,
-      dequeued: 1,
+      dequeued: 0,
       dropped: 1,
       rejected: 0,
     });
