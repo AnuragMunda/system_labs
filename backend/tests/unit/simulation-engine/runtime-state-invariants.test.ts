@@ -4,8 +4,9 @@
  * @description Guards the runtime state-ownership invariants: a queue that
  * survives a failure must be drained after recovery (never stranded), the
  * domain progress cursor must mirror the simulation clock as events process,
- * and `effectiveConcurrency` must stay the single representation of derived
- * capacity after scaling.
+ * `effectiveConcurrency` must stay the single representation of derived
+ * capacity after scaling, and duplicate queue drains must never over-start
+ * requests or lose them.
  */
 
 import { describe, expect, it } from "vitest";
@@ -180,5 +181,74 @@ describe("effective concurrency single source", () => {
     runtime.decrementActiveRequests("api");
 
     expect(runtime.hasCapacity("api")).toBe(true);
+  });
+});
+
+describe("duplicate queue drains are self-correcting", () => {
+  // Two processing slots; three requests wait in the queue while the
+  // component is idle, then two queue.drain events collide at one timestamp
+  // (the completion + scale-up + recovery collision).
+  const graph: ArchitectureGraph = {
+    nodes: [node("api", "api", { latencyMs: 5, concurrency: 2 })],
+    edges: [],
+  };
+
+  it("never over-starts requests and eventually processes every queued request", () => {
+    const { runtime, engine } = createHarness(graph);
+
+    for (const id of ["req-0", "req-1", "req-2"]) {
+      runtime.createRequest({
+        id,
+        status: "queued",
+        createdAtMs: 0,
+        attempts: 0,
+        currentNodeId: "api",
+      });
+      runtime.enqueueRequest("api", id);
+    }
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(3);
+
+    // Two drains at the same timestamp: the second fires before the first
+    // drain's processing_started events have incremented the active count,
+    // so it dequeues with a stale view of available capacity.
+    for (let i = 0; i < 2; i++) {
+      runtime.schedule(
+        createEvent({
+          simulationId: SIMULATION_ID,
+          timestampMs: 1,
+          type: "queue.drain",
+          sourceNodeId: "api",
+        }),
+      );
+    }
+
+    engine.start();
+
+    while (engine.hasPendingEvents()) {
+      engine.step();
+
+      // Capacity is a hard invariant: the start path re-checks it, so even an
+      // over-dequeued drain can never push active requests past the limit.
+      expect(runtime.getActiveRequestCount("api")).toBeLessThanOrEqual(2);
+    }
+
+    // The over-drained request is re-queued by the start gate and finished by
+    // a later drain — nothing is lost and nothing starts twice.
+    for (const id of ["req-0", "req-1", "req-2"]) {
+      expect(runtime.getRequest(id).status).toBe("completed");
+    }
+
+    expect(runtime.getQueuedRequestCount("api")).toBe(0);
+    expect(runtime.getActiveRequestCount("api")).toBe(0);
+    expect(runtime.simulation.status).toBe("completed");
+
+    // The over-drained request round-trips the queue exactly once: dequeued
+    // by the stale second drain, re-queued by the start gate, then dequeued
+    // again by a later drain — the documented benign metric inflation.
+    expect(runtime.getMetrics().components.api.queue).toMatchObject({
+      totalEnqueued: 4,
+      totalDequeued: 4,
+    });
   });
 });

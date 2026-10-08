@@ -4038,6 +4038,32 @@ describe("cache flow", () => {
     expect(runtime.getCache("cache").misses).toBe(0);
   });
 
+  it("should reject a cache hit that arrives after the component fails", () => {
+    const { runtime, processor } = createRuntime(cacheGraph());
+
+    seedCacheEntry(runtime, "GET:/users/123");
+    createCacheRequest(runtime, "req-1", "GET:/users/123");
+    routeToCache(processor, "req-1", 10);
+
+    const hit = dequeueEventOfType(runtime, "cache.hit");
+
+    expect(hit).toBeDefined();
+
+    // The lookup succeeded while healthy; the component fails before the hit
+    // latency elapses and the cache.hit event is processed.
+    runtime.setComponentHealth("cache", "failed");
+
+    processor.process(hit!);
+
+    const terminal = dequeueEventOfType(runtime, "request.failed");
+
+    expect(terminal?.payload?.reason).toBe("component_failed");
+    processor.process(terminal!);
+
+    expect(runtime.getRequest("req-1").status).toBe("failed");
+    expect(dequeueEventOfType(runtime, "request.completed")).toBeUndefined();
+  });
+
   it("should clear cache entries and restore counters on runtime reset", () => {
     const graph = cacheGraph({ cache: { ttlMs: 1000, capacity: 2 } });
     const { runtime } = createRuntime(graph);

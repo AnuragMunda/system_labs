@@ -24,8 +24,6 @@ export type SimulationEventType =
   | "queue.enqueue"
   | "queue.dequeue"
   | "queue.drain"
-  | "worker.started"
-  | "worker.completed"
   | "component.failed"
   | "component.recovery"
   | "component.recovered"

@@ -216,6 +216,38 @@ The Simulation module orchestrates execution; it does not contain the simulation
   drain so a non-empty queue is never stranded once the component is healthy
   again.
 
+**Event scheduling & staleness**
+
+- Every scheduled event type has exactly one producer path. Terminal request
+  events (`request.completed`, `request.failed`) are mutually exclusive per
+  request: a failure schedules either a retry or a terminal failure, never
+  both, so handlers need no terminal-state guards — producer exclusivity is
+  the invariant.
+- Arrival events re-validate current state instead of trusting their payload.
+  `request.processing_started` is the full gate (circuit → health → capacity →
+  attempts → error rate); cache lookup and `component.scaled` re-check health
+  and configuration at arrival; routing re-checks the circuit via
+  `admitArrival`.
+- Two staleness guards use generation counters: recovery events carry the
+  generation of their failure period (a new failure bumps it, invalidating old
+  timers), and `component.circuit_half_open` carries the circuit generation
+  (re-opening bumps it). Stale events are ignored, never applied.
+- Duplicate circuit trips are suppressed at the source: `recordCircuitFailure`
+  returns early while the circuit is already open, so no duplicate
+  `circuit_opened` event or half-open timer can be scheduled.
+- `queue.drain` may be scheduled more than once for the same timestamp
+  (completion + scale-up + recovery). This is benign: the second drain may
+  dequeue up to the slots it sees, `processing_started` re-checks capacity and
+  re-queues anything that no longer fits, and no request is lost or started
+  twice — only queue metrics may count the round trip.
+- `autoscaling.evaluate` forms a single chain: seeded once by
+  `SimulationSession.prepare` (which runs only from `run()`), then extended
+  one-for-one by `handleEvaluate`, bounded by the simulation duration.
+- Observability-only events (`queue.enqueue`, `queue.dequeue`,
+  `component.health_changed`, `component.recovery_scheduled`,
+  `component.circuit_opened`, `component.circuit_closed`) mutate no state;
+  their handlers only validate shape.
+
 **What the engine does not do**
 
 - Traffic generation, failure scheduling, and autoscaling initialization are

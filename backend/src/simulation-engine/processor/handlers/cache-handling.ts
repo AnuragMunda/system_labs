@@ -87,6 +87,23 @@ export class CacheHandlers {
       throw new Error("cache.hit event requires a cacheKey.");
     }
 
+    // A failed cache can serve neither path. Closing the window where the
+    // node fails after the lookup decided on a hit but before this event
+    // runs (the hit latency elapses in between).
+    const component = this.runtime.getComponent(event.sourceNodeId);
+
+    if (component.health === "failed") {
+      this.failureHandlers.scheduleTerminalFailure({
+        event,
+        requestId,
+        sourceNodeId: event.sourceNodeId,
+        reason: "component_failed",
+        probeNodeId: event.sourceNodeId,
+      });
+
+      return;
+    }
+
     this.runtime.getRequest(requestId);
 
     this.runtime.updateRequest(requestId, {
