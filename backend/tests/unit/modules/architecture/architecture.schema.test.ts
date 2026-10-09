@@ -491,6 +491,144 @@ describe("architectureSchema capacity config", () => {
   });
 });
 
+describe("architectureSchema health thresholds", () => {
+  const payloadWithThresholds = (healthThresholds: unknown) => ({
+    ...validArchitecture,
+    nodes: [
+      validArchitecture.nodes[0]!,
+      {
+        ...validArchitecture.nodes[1]!,
+        config: { healthThresholds },
+      },
+    ],
+  });
+
+  const validThresholds = {
+    utilization: { degraded: 0.7, critical: 0.9 },
+    errorRate: { degraded: 0.05, critical: 0.2 },
+    latencyMs: { degraded: 200, critical: 500 },
+  };
+
+  it("accepts ordered thresholds within range", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithThresholds(validThresholds))
+        .success,
+    ).toBe(true);
+  });
+
+  it("accepts zero bounds for every metric", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          utilization: { degraded: 0, critical: 0 },
+          errorRate: { degraded: 0, critical: 0 },
+          latencyMs: { degraded: 0, critical: 0 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("accepts equal degraded and critical bounds", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          utilization: { degraded: 0.5, critical: 0.5 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("accepts utilization and error rate bounds of 1", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          utilization: { degraded: 1, critical: 1 },
+          errorRate: { degraded: 1, critical: 1 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects a utilization bound above 1", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          utilization: { degraded: 0.7, critical: 1.5 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects an error rate bound above 1", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          errorRate: { degraded: 0.2, critical: 2 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("accepts latency bounds above 1 (milliseconds)", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          latencyMs: { degraded: 1000, critical: 5000 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects an inverted utilization band", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          utilization: { degraded: 0.9, critical: 0.5 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects an inverted error rate band", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          errorRate: { degraded: 0.2, critical: 0.05 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects an inverted latency band", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          latencyMs: { degraded: 500, critical: 200 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a negative latency bound", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithThresholds({
+          ...validThresholds,
+          latencyMs: { degraded: -1, critical: 500 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
 describe("updateArchitectureSchema", () => {
   it("accepts an empty object", () => {
     const result = updateArchitectureSchema.safeParse({});

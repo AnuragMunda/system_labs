@@ -72,11 +72,26 @@ const retryPolicySchema = z
   })
   .optional();
 
-/** A `degraded`/`critical` pair of health bounds. */
-const healthBoundSchema = z.object({
-  degraded: z.number().nonnegative(),
-  critical: z.number().nonnegative(),
-});
+/**
+ * Builds a `degraded`/`critical` health threshold pair.
+ *
+ * When `max` is supplied the bounds are constrained to `0..max` (utilization
+ * and error rate are fractions); otherwise any finite non-negative value is
+ * allowed (latency is measured in milliseconds). The pair is additionally
+ * required to be ordered, since an inverted band would make the `degraded`
+ * level unreachable when health is evaluated.
+ */
+const healthBoundSchema = (max?: number) => {
+  const bound =
+    max === undefined ? z.number().nonnegative() : z.number().min(0).max(max);
+
+  return z
+    .object({ degraded: bound, critical: bound })
+    .refine((bounds) => bounds.degraded <= bounds.critical, {
+      message:
+        "Health threshold 'degraded' must be less than or equal to 'critical'",
+    });
+};
 
 /** Optional runtime tuning for a component node. */
 const componentConfig = z
@@ -114,9 +129,9 @@ const componentConfig = z
     // Threshold-based health evaluation overrides.
     healthThresholds: z
       .object({
-        utilization: healthBoundSchema,
-        errorRate: healthBoundSchema,
-        latencyMs: healthBoundSchema,
+        utilization: healthBoundSchema(1),
+        errorRate: healthBoundSchema(1),
+        latencyMs: healthBoundSchema(),
       })
       .optional(),
 
