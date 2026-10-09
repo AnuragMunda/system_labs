@@ -300,10 +300,16 @@ export class SimulationRuntime {
         currentEntries: cache.size,
         maxEntries: cache.maxEntries,
       })),
-      dbOperations: this.metricsStore.dbOperations,
-      failureByReason: this.metricsStore.failureByReason,
-      failureByNode: this.metricsStore.failureByNode,
-      retriesByNode: this.metricsStore.retriesByNode,
+      // Copy the runtime's mutable store records so the frozen snapshot never
+      // aliases (and freezes) live state the runtime still mutates.
+      dbOperations: Object.fromEntries(
+        Object.entries(this.metricsStore.dbOperations).map(
+          ([nodeId, counts]) => [nodeId, { ...counts }],
+        ),
+      ),
+      failureByReason: { ...this.metricsStore.failureByReason },
+      failureByNode: { ...this.metricsStore.failureByNode },
+      retriesByNode: { ...this.metricsStore.retriesByNode },
       totalRetries: this.metricsStore.totalRetries,
       transmissions: this.metricsStore.transmissions,
       packetLosses: this.metricsStore.packetLosses,

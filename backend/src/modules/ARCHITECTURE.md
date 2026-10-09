@@ -215,6 +215,14 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - Cache hits are the explicit capacity exception: a hit completes the request
   on the fast path without entering processing, so it never changes
   `activeRequests`. Only the miss path consumes and releases capacity.
+- Metrics are a derived, frozen snapshot, never a second source of truth:
+  `getMetrics()` reads component fields, the request map, and
+  `componentRequestQueue` sizes (plus the store for counts with no single
+  owner, e.g. network and retries) and deep-copies them, so no snapshot field
+  aliases live state. Nothing reads the snapshot back into behavior.
+  `requests.inFlight` is the non-terminal count (pending + queued + being
+  processed), so `generated = completed + failed + inFlight`; the true
+  processing count is `components[].traffic.active`.
 - `simulation.currentTimeMs` mirrors the clock after every processed event so
   the domain object's progress cursor stays truthful; `reset` zeroes it.
 - `attempts` is a shared budget across processing and network stages; both

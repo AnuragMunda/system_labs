@@ -816,3 +816,118 @@ describe("SimulationMetrics", () => {
     expect(metrics.health.byNode).toEqual({});
   });
 });
+
+describe("metrics derive from runtime state", () => {
+  it("does not freeze or alias live runtime state when a snapshot is taken", () => {
+    const { runtime } = createFixture(buildPipelineGraph());
+
+    runtime.recordRequestFailure("boom", "api");
+
+    const first = runtime.getMetrics();
+
+    expect(first.failures.byReason.boom).toBe(1);
+    expect(Object.isFrozen(first.failures.byReason)).toBe(true);
+
+    // Recording after a snapshot must not throw: the snapshot owns a copy, not
+    // the runtime's live failure maps.
+    expect(() => runtime.recordRequestFailure("boom", "api")).not.toThrow();
+
+    const second = runtime.getMetrics();
+
+    expect(second.failures.byReason.boom).toBe(2);
+    // The earlier snapshot is an immutable record of the earlier state.
+    expect(first.failures.byReason.boom).toBe(1);
+  });
+
+  it("derives per-component traffic and queue depth from live component state", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "load_balancer"),
+        node("api", "api", {
+          concurrency: 1,
+          latencyMs: 20,
+          queue: { enabled: true, maxSize: 5 },
+        }),
+      ],
+      edges: [edge("client", "api")],
+    };
+    const { runtime, session } = createFixture(graph, {
+      durationMs: 1000,
+      requestsPerSecond: 20,
+    });
+    runToEnd(session, "client");
+
+    const metrics = runtime.getMetrics();
+
+    expect(metrics.requests.generated).toBe(
+      metrics.requests.completed +
+        metrics.requests.failed +
+        metrics.requests.inFlight,
+    );
+
+    for (const component of Object.values(metrics.components)) {
+      const live = runtime.getComponent(component.nodeId);
+
+      expect(component.traffic.processed).toBe(live.processedRequests);
+      expect(component.traffic.active).toBe(live.activeRequests);
+      expect(component.queue.currentDepth).toBe(
+        runtime.getQueuedRequestCount(component.nodeId),
+      );
+    }
+
+    expect(metrics.components.api.queue.peakDepth).toBeGreaterThanOrEqual(
+      metrics.components.api.queue.currentDepth,
+    );
+  });
+
+  it("derives cache occupancy from the live cache state", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "load_balancer"),
+        node("cache", "cache", {
+          concurrency: 100,
+          cache: { capacity: 10, ttlMs: 10_000 },
+        }),
+      ],
+      edges: [edge("client", "cache")],
+    };
+    const { runtime, session } = createFixture(graph, {
+      durationMs: 1000,
+      requestsPerSecond: 10,
+      cacheKeys: ["GET:/users/1"],
+    });
+    runToEnd(session, "client");
+
+    const metrics = runtime.getMetrics();
+
+    expect(metrics.cache.byNode.cache.currentEntries).toBe(
+      runtime.getCache("cache").size,
+    );
+  });
+
+  it("derives the failure total from terminal request state", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "load_balancer"),
+        node("svc", "api", {
+          concurrency: 100,
+          latencyMs: 10,
+          errorRate: 1,
+          retryPolicy: { retries: 2 },
+        }),
+      ],
+      edges: [edge("client", "svc")],
+    };
+    const { runtime, session } = createFixture(graph);
+    runToEnd(session, "client");
+
+    const metrics = runtime.getMetrics();
+    const byReasonTotal = Object.values(metrics.failures.byReason).reduce(
+      (sum, count) => sum + count,
+      0,
+    );
+
+    expect(metrics.failures.total).toBe(metrics.requests.failed);
+    expect(metrics.failures.total).toBe(byReasonTotal);
+  });
+});

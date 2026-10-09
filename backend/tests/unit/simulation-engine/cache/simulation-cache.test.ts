@@ -139,6 +139,29 @@ describe("SimulationCache", () => {
     expect(cache.hits).toBe(3);
   });
 
+  it("should answer `has` without counting hits or misses", () => {
+    const cache = new SimulationCache(2, 100);
+    cache.set("KEY", "value", 0);
+
+    expect(cache.has("KEY", 50)).toBe(true);
+    expect(cache.has("KEY", 50)).toBe(true);
+    expect(cache.has("missing", 50)).toBe(false);
+
+    // A predicate must not affect the cache metrics or LRU ordering.
+    expect(cache.hits).toBe(0);
+    expect(cache.misses).toBe(0);
+  });
+
+  it("should treat an expired entry as absent in `has` and remove it", () => {
+    const cache = new SimulationCache(2, 100);
+    cache.set("KEY", "value", 0);
+
+    expect(cache.has("KEY", 100)).toBe(false);
+    expect(cache.size).toBe(0);
+    expect(cache.hits).toBe(0);
+    expect(cache.misses).toBe(0);
+  });
+
   it("should clear all entries and reset the counters", () => {
     const cache = new SimulationCache(1, 0);
     cache.set("A", "a", 0);

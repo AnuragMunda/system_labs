@@ -39,7 +39,8 @@ export interface SimulationRequestMetrics {
   failed: number;
   /** Total retry attempts performed (request.retry events). */
   retries: number;
-  /** Requests currently being processed at snapshot time. */
+  /** Requests not in a terminal state at snapshot time: pending, queued, or
+   * being processed. Derived, so `generated = completed + failed + inFlight`. */
   inFlight: number;
   /** Requests currently waiting in queues at snapshot time. */
   queued: number;

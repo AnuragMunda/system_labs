@@ -122,8 +122,25 @@ export class SimulationCache {
     return this.state.entries.delete(key);
   }
 
+  /**
+   * Reports whether a live (unexpired) entry exists for a key without
+   * affecting the cache metrics or LRU ordering: unlike {@link get}, a
+   * predicate must not count a hit or miss or touch the entry's access time.
+   * Expired entries are removed lazily, the same way {@link get} does.
+   */
   has(key: string, currentTimeMs: number): boolean {
-    return this.get(key, currentTimeMs) !== undefined;
+    const entry = this.state.entries.get(key);
+
+    if (!entry) {
+      return false;
+    }
+
+    if (this.isExpired(entry, currentTimeMs)) {
+      this.state.entries.delete(key);
+      return false;
+    }
+
+    return true;
   }
 
   clear(): void {
