@@ -205,6 +205,16 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - `component.effectiveConcurrency` is the single representation of derived
   capacity (written at registration and by `setComponentReplicas`);
   `getEffectiveConcurrency()` reads it rather than recomputing.
+- Capacity bounds hold at every point: `replicas` is a positive integer and,
+  when autoscaling is enabled, stays within `[autoscaling.min, autoscaling.max]`
+  (initial replicas are clamped at registration, and `setComponentReplicas`
+  refuses a scale-down whose `effectiveConcurrency` would fall below the
+  component's current `activeRequests`). Consequently
+  `0 <= component.activeRequests <= component.effectiveConcurrency` always
+  holds and a component's queue size is never negative.
+- Cache hits are the explicit capacity exception: a hit completes the request
+  on the fast path without entering processing, so it never changes
+  `activeRequests`. Only the miss path consumes and releases capacity.
 - `simulation.currentTimeMs` mirrors the clock after every processed event so
   the domain object's progress cursor stays truthful; `reset` zeroes it.
 - `attempts` is a shared budget across processing and network stages; both

@@ -364,6 +364,133 @@ describe("architectureSchema queue config", () => {
   });
 });
 
+describe("architectureSchema capacity config", () => {
+  const payloadWithConfig = (config: unknown) => ({
+    ...validArchitecture,
+    nodes: [
+      validArchitecture.nodes[0]!,
+      {
+        ...validArchitecture.nodes[1]!,
+        config,
+      },
+    ],
+  });
+
+  it("rejects replicas of 0", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithConfig({ replicas: 0 })).success,
+    ).toBe(false);
+  });
+
+  it("rejects fractional replicas", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithConfig({ replicas: 1.5 }))
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects concurrency of 0", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithConfig({ concurrency: 0 }))
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects fractional concurrency", () => {
+    expect(
+      architectureSchema.safeParse(payloadWithConfig({ concurrency: 1.5 }))
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts positive integer replicas and concurrency", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({ replicas: 2, concurrency: 4 }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects explicit replicas outside an enabled autoscaling band", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({
+          replicas: 2,
+          autoscaling: { enabled: true, min: 3, max: 6, targetCpu: 70 },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("accepts explicit replicas inside an enabled autoscaling band", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({
+          replicas: 4,
+          autoscaling: { enabled: true, min: 3, max: 6, targetCpu: 70 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("allows explicit replicas outside the band when autoscaling is disabled", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({
+          replicas: 2,
+          autoscaling: { enabled: false, min: 3, max: 6, targetCpu: 70 },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("preserves cache, routing, health, and recovery configuration through parsing", () => {
+    const result = architectureSchema.safeParse(
+      payloadWithConfig({
+        cache: { ttlMs: 1000, capacity: 8, hitLatencyMs: 1, missLatencyMs: 5 },
+        routingStrategy: "least_connections",
+        healthThresholds: {
+          utilization: { degraded: 0.7, critical: 0.9 },
+          errorRate: { degraded: 0.05, critical: 0.2 },
+          latencyMs: { degraded: 100, critical: 500 },
+        },
+        recoveryDelayMs: 200,
+      }),
+    );
+
+    expect(result.success).toBe(true);
+
+    if (result.success) {
+      expect(result.data.nodes[1]!.config).toMatchObject({
+        cache: { ttlMs: 1000, capacity: 8, hitLatencyMs: 1, missLatencyMs: 5 },
+        routingStrategy: "least_connections",
+        healthThresholds: {
+          utilization: { degraded: 0.7, critical: 0.9 },
+          errorRate: { degraded: 0.05, critical: 0.2 },
+          latencyMs: { degraded: 100, critical: 500 },
+        },
+        recoveryDelayMs: 200,
+      });
+    }
+  });
+
+  it("rejects an unknown routing strategy", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({ routingStrategy: "spray" }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a cache configuration missing its required fields", () => {
+    expect(
+      architectureSchema.safeParse(
+        payloadWithConfig({ cache: { capacity: 8 } }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
 describe("updateArchitectureSchema", () => {
   it("accepts an empty object", () => {
     const result = updateArchitectureSchema.safeParse({});

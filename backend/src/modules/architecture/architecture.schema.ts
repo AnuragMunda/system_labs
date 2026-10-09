@@ -72,33 +72,87 @@ const retryPolicySchema = z
   })
   .optional();
 
-/** Optional runtime tuning for a component node. */
-const componentConfig = z.object({
-  latencyMs: z.number().nonnegative().optional(),
-  capacity: z.number().positive().optional(),
-  concurrency: z.number().nonnegative().optional(),
-  errorRate: z.number().min(0).max(1).optional(),
-
-  // Queue and backpressure configuration (read by the simulation engine).
-  queue: z
-    .object({
-      enabled: z.boolean().optional(),
-      maxSize: z.number().int().min(0).optional(),
-      overflowStrategy: z.enum(["reject", "drop_oldest"]).optional(),
-    })
-    .optional(),
-
-  // Extended editor configuration
-  replicas: z.number().int().nonnegative().optional(),
-  cpu: z.number().nonnegative().optional(),
-  memory: z.number().nonnegative().optional(),
-  autoscaling: autoscalingSchema,
-  region: z.string().optional(),
-  timeoutMs: z.number().nonnegative().optional(),
-  retryPolicy: retryPolicySchema,
-  traffic: z.number().nonnegative().optional(),
-  health: z.enum(["healthy", "degraded", "critical"]).optional(),
+/** A `degraded`/`critical` pair of health bounds. */
+const healthBoundSchema = z.object({
+  degraded: z.number().nonnegative(),
+  critical: z.number().nonnegative(),
 });
+
+/** Optional runtime tuning for a component node. */
+const componentConfig = z
+  .object({
+    latencyMs: z.number().nonnegative().optional(),
+    capacity: z.number().positive().optional(),
+    concurrency: z.number().int().min(1).optional(),
+    errorRate: z.number().min(0).max(1).optional(),
+
+    // Queue and backpressure configuration (read by the simulation engine).
+    queue: z
+      .object({
+        enabled: z.boolean().optional(),
+        maxSize: z.number().int().min(0).optional(),
+        overflowStrategy: z.enum(["reject", "drop_oldest"]).optional(),
+      })
+      .optional(),
+
+    // Extended editor configuration
+    replicas: z.number().int().min(1).optional(),
+    cpu: z.number().nonnegative().optional(),
+    memory: z.number().nonnegative().optional(),
+    autoscaling: autoscalingSchema,
+    region: z.string().optional(),
+    timeoutMs: z.number().nonnegative().optional(),
+    retryPolicy: retryPolicySchema,
+    traffic: z.number().nonnegative().optional(),
+    health: z.enum(["healthy", "degraded", "critical"]).optional(),
+
+    // Load-balancing strategy used when forwarding to outgoing edges.
+    routingStrategy: z
+      .enum(["round_robin", "random", "least_connections"])
+      .optional(),
+
+    // Threshold-based health evaluation overrides.
+    healthThresholds: z
+      .object({
+        utilization: healthBoundSchema,
+        errorRate: healthBoundSchema,
+        latencyMs: healthBoundSchema,
+      })
+      .optional(),
+
+    // How long a failed component stays unavailable before recovering.
+    recoveryDelayMs: z.number().nonnegative().optional(),
+
+    // Cache fast-path configuration for `cache` nodes.
+    cache: z
+      .object({
+        ttlMs: z.number().nonnegative(),
+        capacity: z.number().int().min(1),
+        hitLatencyMs: z.number().nonnegative().optional(),
+        missLatencyMs: z.number().nonnegative().optional(),
+      })
+      .optional(),
+  })
+  .superRefine((config, ctx) => {
+    const autoscaling = config.autoscaling;
+
+    if (!autoscaling?.enabled) {
+      return;
+    }
+
+    const replicas = config.replicas;
+
+    if (
+      replicas !== undefined &&
+      (replicas < autoscaling.min || replicas > autoscaling.max)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `replicas must be within the autoscaling bounds [${autoscaling.min}, ${autoscaling.max}]`,
+        path: ["replicas"],
+      });
+    }
+  });
 
 /** Optional runtime tuning for a connection edge. */
 const connectionConfig = z.object({

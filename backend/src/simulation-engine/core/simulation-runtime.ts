@@ -48,6 +48,7 @@ import {
 } from "../metrics/metrics-snapshot.js";
 import { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
 import { DatabaseOperation } from "@/domain/simulation/request.types.js";
+import { AutoscalingConfig } from "@/domain/architecture/component.types.js";
 
 /**
  * Simulation-level metrics observations that cannot be derived from the
@@ -110,6 +111,22 @@ export function createComponentMetrics(
 
 /** A processed-request reason string, used to key the failure-by-reason map. */
 export type FailureReason = string;
+
+/**
+ * Resolves a component's initial replica count, clamping it into the
+ * configured autoscaling band when autoscaling is enabled so the run never
+ * starts with `replicas` outside `[min, max]`.
+ */
+function resolveInitialReplicas(
+  replicas: number,
+  autoscaling: AutoscalingConfig | undefined,
+): number {
+  if (!autoscaling?.enabled) {
+    return replicas;
+  }
+
+  return Math.max(autoscaling.min, Math.min(autoscaling.max, replicas));
+}
 
 /**
  * Holds the mutable state for one simulation run — the simulation itself, its
@@ -818,9 +835,22 @@ export class SimulationRuntime {
 
     const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
 
+    const effectiveConcurrency = getEffectiveConcurrency(replicas, concurrency);
+    const activeRequests = this.getActiveRequestCount(nodeId);
+
+    // Capacity must never drop below the requests already in flight. Autoscaling
+    // already defers such a scale-down, but this guard keeps the invariant true
+    // regardless of the caller.
+    if (effectiveConcurrency < activeRequests) {
+      throw new Error(
+        `Cannot scale ${nodeId} to ${replicas} replicas: effective concurrency ` +
+          `${effectiveConcurrency} is below the ${activeRequests} active requests.`,
+      );
+    }
+
     this.updateComponent(nodeId, {
       replicas,
-      effectiveConcurrency: getEffectiveConcurrency(replicas, concurrency),
+      effectiveConcurrency,
     });
 
     if (this.metricsEnabled) {
@@ -1071,7 +1101,10 @@ export class SimulationRuntime {
    */
   private initializeComponents(): void {
     for (const node of this.simulation.architectureSnapshot.nodes) {
-      const replicas = node.config.replicas ?? DEFAULT_REPLICAS;
+      const replicas = resolveInitialReplicas(
+        node.config.replicas ?? DEFAULT_REPLICAS,
+        node.config.autoscaling,
+      );
       const concurrency = node.config.concurrency ?? DEFAULT_CONCURRENCY;
       const circuitConfig = resolveCircuitBreakerConfig(
         node.config.retryPolicy,
