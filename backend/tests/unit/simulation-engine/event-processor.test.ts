@@ -6764,4 +6764,111 @@ describe("circuit breaker", () => {
     });
     expect(secondRun.runtime.getRequest("req-3").status).toBe("completed");
   });
+
+  it("circuit open, half-open, and close transitions leave component health and recovery generation intact", () => {
+    const config: ArchitectureNode["config"] = {
+      recoveryDelayMs: 400,
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime, processor } = createRuntime(circuitGraph(config));
+
+    // Establish a completed recovery cycle so the recovery generation is
+    // non-zero before the breaker is ever consulted.
+    processor.process(createEvent("component.failed", 0, "req", "api"));
+    processor.process(dequeueEventOfType(runtime, "component.recovery")!);
+    processor.process(dequeueEventOfType(runtime, "component.recovered")!);
+
+    expect(runtime.getComponent("api").health).toBe("healthy");
+    expect(runtime.getComponent("api").recoveryGeneration).toBe(1);
+
+    // Trip the breaker directly, so no traffic runs and no metric-driven
+    // health change can muddy the invariant under test.
+    runtime.recordCircuitFailure("api");
+    const record = runtime.recordCircuitFailure("api");
+
+    expect(record?.opened).toBe(true);
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "open",
+      generation: 1,
+    });
+    // Opening is a transport concern: health and the recovery generation are
+    // owned by unrelated lifecycles and must be left untouched.
+    expect(runtime.getComponent("api").health).toBe("healthy");
+    expect(runtime.getComponent("api").recoveryGeneration).toBe(1);
+
+    // Advance the open circuit to half-open via its scheduled event.
+    processor.process({
+      id: "half-open",
+      simulationId: "simulation-1",
+      timestampMs: 1000,
+      type: "component.circuit_half_open",
+      sourceNodeId: "api",
+      payload: { generation: runtime.getCircuitState("api").generation },
+    });
+
+    expect(runtime.getCircuitState("api").state).toBe("half-open");
+    expect(runtime.getComponent("api").health).toBe("healthy");
+    expect(runtime.getComponent("api").recoveryGeneration).toBe(1);
+
+    // A successful half-open probe closes the circuit.
+    runtime.resetCircuit("api");
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "closed",
+      consecutiveFailures: 0,
+      generation: 1,
+      probeInFlight: false,
+    });
+    expect(runtime.getComponent("api").health).toBe("healthy");
+    expect(runtime.getComponent("api").recoveryGeneration).toBe(1);
+  });
+
+  it("evaluating component health does not disturb an open circuit", () => {
+    const config: ArchitectureNode["config"] = {
+      healthThresholds: {
+        utilization: { degraded: 0, critical: 0.9 },
+        errorRate: { degraded: 0.1, critical: 0.5 },
+        latencyMs: { degraded: 100, critical: 500 },
+      },
+      retryPolicy: {
+        retries: 0,
+        circuitBreaker: {
+          enabled: true,
+          failureThreshold: 2,
+          openDurationMs: 1000,
+        },
+      },
+    };
+
+    const { runtime } = createRuntime(circuitGraph(config));
+
+    runtime.recordCircuitFailure("api");
+    runtime.recordCircuitFailure("api");
+
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "open",
+      generation: 1,
+      consecutiveFailures: 2,
+    });
+
+    const change = runtime.evaluateComponentHealth("api");
+
+    // The health evaluation genuinely transitions the component...
+    expect(change).toEqual({ previousHealth: "healthy", health: "degraded" });
+    // ...but owns the health state only: the open circuit (and its generation,
+    // used to invalidate stale timers) is preserved intact.
+    expect(runtime.getCircuitState("api")).toMatchObject({
+      state: "open",
+      generation: 1,
+      consecutiveFailures: 2,
+    });
+  });
 });

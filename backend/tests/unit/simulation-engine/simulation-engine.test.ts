@@ -1502,6 +1502,52 @@ describe("SimulationEngine", () => {
     expect(runtime.eventQueue.size()).toBe(2);
   });
 
+  it("should preserve simulation time and queued events across a pause/resume then keep stepping in order", () => {
+    const { runtime, engine, eventProcessor } = createFixture();
+
+    engine.schedule(createEvent("event-1", 10));
+    engine.schedule(createEvent("event-2", 20));
+    engine.schedule(createEvent("event-3", 30));
+
+    engine.start();
+
+    expect(runtime.simulation.status).toBe("running");
+
+    // Step once: the first event is processed and the clock advances to it.
+    expect(engine.step()).toBe(true);
+    expect(runtime.currentTimeMs).toBe(10);
+
+    engine.pause();
+
+    expect(runtime.simulation.status).toBe("paused");
+    // Pausing freezes time and keeps pending events; it must not rewind the
+    // clock or drop the remaining queue.
+    expect(runtime.currentTimeMs).toBe(10);
+    expect(runtime.eventQueue.size()).toBe(2);
+
+    engine.resume();
+
+    expect(runtime.simulation.status).toBe("running");
+    expect(runtime.currentTimeMs).toBe(10);
+    expect(runtime.eventQueue.size()).toBe(2);
+
+    // Stepping resumes from the frozen clock rather than restarting at zero.
+    expect(engine.step()).toBe(true);
+    expect(runtime.currentTimeMs).toBe(20);
+
+    expect(engine.step()).toBe(true);
+    expect(runtime.currentTimeMs).toBe(30);
+
+    // Every event ran exactly once, in timestamp order, with nothing skipped.
+    expect(eventProcessor.process).toHaveBeenCalledTimes(3);
+    expect(
+      eventProcessor.process.mock.calls.map(
+        ([event]: [SimulationEvent]) => event.timestampMs,
+      ),
+    ).toEqual([10, 20, 30]);
+    expect(runtime.eventQueue.size()).toBe(0);
+  });
+
   it("should preserve the event queue when a simulation is cancelled", () => {
     const { runtime, engine } = createFixture();
 

@@ -406,6 +406,53 @@ describe("SimulationMetrics", () => {
     });
   });
 
+  it("separates network transmission latency from end-to-end latency", () => {
+    const graph: ArchitectureGraph = {
+      nodes: [
+        node("client", "load_balancer"),
+        node("api", "api", { concurrency: 100, latencyMs: 20 }),
+        node("db", "database", { concurrency: 100, latencyMs: 30 }),
+      ],
+      edges: [
+        // Non-zero link latency makes network time observable and distinct
+        // from processing time.
+        edge("client", "api", { latencyMs: 5 }),
+        edge("api", "db", { latencyMs: 3 }),
+      ],
+    };
+
+    const { runtime, session } = createFixture(graph, {
+      durationMs: 1000,
+      requestsPerSecond: 10,
+    });
+    runToEnd(session, "client");
+
+    const metrics = runtime.getMetrics();
+
+    // Ten requests, each crossing two links (5ms then 3ms).
+    expect(metrics.network.transmissions).toBe(20);
+    expect(metrics.network.summary.count).toBe(20);
+    expect(metrics.network.summary.avgMs).toBe(4);
+    expect(metrics.network.totalLatencyMs).toBe(80);
+
+    // The dedicated network histogram mirrors the network summary.
+    expect(metrics.latency.network).toEqual(metrics.network.summary);
+
+    // End-to-end latency is strictly the sum of processing hops plus the
+    // network transmission latencies — it is not the network time alone.
+    expect(metrics.latency.endToEnd).toMatchObject({
+      count: 10,
+      avgMs: 58,
+      minMs: 58,
+      maxMs: 58,
+    });
+    expect(metrics.latency.endToEnd.avgMs).toBe(
+      metrics.latency.processing.totals.avgMs * 2 +
+        metrics.network.summary.avgMs * 2,
+    );
+    expect(metrics.latency.processing.totals.avgMs).toBe(25);
+  });
+
   it("records failures and retries per reason and node", () => {
     const graph: ArchitectureGraph = {
       nodes: [

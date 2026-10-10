@@ -281,6 +281,12 @@ The Simulation module orchestrates execution; it does not contain the simulation
   are impossible by producer exclusivity (a failure schedules a retry _xor_ a
   terminal failure) and are asserted at handling time: any lifecycle event
   arriving for a terminal request throws instead of resurrecting it.
+- Processing order is total and deterministic: the queue orders by
+  `timestampMs` and then by insertion sequence, so events sharing a timestamp
+  are processed in the order they were scheduled, and an event scheduled
+  _during_ processing lands after the peers already queued at that timestamp.
+  The clock advances monotonically to each processed event's timestamp and
+  never moves backwards.
 
 **What the engine does not do**
 
@@ -298,6 +304,36 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - `EventProcessor`
 - `SimulationRuntime`
 - `TrafficGenerator` / `FailureScheduler` / `AutoscalingScheduler`
+
+**Orchestration contract**
+
+- Prepare once, then execute: `SimulationSession.prepare(entryNodeId)` populates
+  load and schedules failures/autoscaling while the simulation is still
+  `created`; `SimulationEngine.start()` enters `running` without processing
+  anything; `step()`/`run()` then drain the queue. `session.run()` is exactly
+  `prepare()` followed by `engine.run()`.
+- `pause()` and `resume()` leave the clock and event queue untouched, so
+  stepping resumes from the frozen timestamp rather than restarting at zero.
+  `cancel()` records `completedAt` and also leaves the queue intact.
+- `reset()` is a rewind, not a transition (see Lifecycle): it is available from
+  every status and returns the runtime to a fresh, replayable state.
+- The worker composes these same objects; no engine behavior depends on the
+  API, HTTP, or the database.
+
+**Known limitations (deferred)**
+
+- Duplicate `queue.drain` events at the same timestamp may inflate queue
+  round-trip metrics (dequeue/enqueue counts and queue-wait samples); no request
+  is lost or started twice.
+- A lost network transmission is detected at link latency, not at the moment the
+  packet is dropped, so a `network_packet_loss` failure fires after the latency
+  window elapses.
+- Simulation configuration has no Zod boundary yet (the API schema will define
+  it); engine-side numeric config is not exhaustively `Number.isFinite`-hardened
+  beyond the simulation clock.
+- Several documented config fields are accepted but unused by the MVP engine
+  (`capacity`, `cpu`, `memory`, `traffic`, `timeoutMs`, `simulationSpeed`,
+  `trafficRate`).
 
 **Dependencies**
 

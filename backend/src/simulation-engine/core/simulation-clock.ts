@@ -31,10 +31,17 @@ export class SimulationClock {
    *
    * @param timestamp - Absolute simulation time (ms since start) to jump to,
    * typically the timestamp of the next event in the event queue.
-   * @throws If the timestamp is negative or earlier than the current time,
-   * since moving backwards would break event ordering guarantees.
+   * @throws If the timestamp is not finite, is negative, or is earlier than
+   * the current time — a non-finite value would poison every subsequent
+   * reading, and moving backwards would break event ordering guarantees.
    */
   advanceTo(timestamp: number): void {
+    if (!Number.isFinite(timestamp)) {
+      throw new Error(
+        `Simulation time must be a finite number. Received: ${timestamp}`,
+      );
+    }
+
     if (timestamp < 0) throw new Error("Simulation time cannot be negative.");
 
     if (timestamp < this.currentTimeMs)
