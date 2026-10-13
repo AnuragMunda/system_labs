@@ -148,6 +148,7 @@ Modules should communicate through explicit service/domain interfaces rather tha
 
 **Interfaces**
 
+- `SimulationOrchestrator` (implemented)
 - `SimulationService`
 - `SimulationRepository`
 - `SimulationQueue`
@@ -159,6 +160,34 @@ Modules should communicate through explicit service/domain interfaces rather tha
 - Database
 - Redis/BullMQ
 - Simulation Engine
+
+**Implemented — `SimulationOrchestrator`**
+`SimulationOrchestrator` is the framework-independent orchestration service.
+The traffic source node is an orchestration input (`CreateSimulationInput`), not
+a field on `SimulationConfig`, because it describes topology, not load shape.
+The orchestrator:
+
+- creates a run from a validated `ArchitectureGraph` snapshot and
+  `SimulationConfig`, failing fast when the source node is absent;
+- wires a per-run isolated runtime stack (`SimulationRuntime` →
+  `DefaultEventProcessor` → `SimulationEngine` → `SimulationSession`) so runs
+  never share clock, event queue, PRNG, or metrics state;
+- coordinates traffic generation with execution and drives lifecycle via the
+  engine's lifecycle matrix (it does not duplicate lifecycle rules);
+- exposes `start`/`step`/`run`/`pause`/`resume`/`cancel` control and returns
+  plain DTOs (`SimulationSnapshot`, `SimulationMetrics`, `SimulationReport`)
+  that never alias live runtime state.
+
+Execution is synchronous and in-process: the engine drives a virtual clock and
+never sleeps, so a full run is a bounded loop. A background worker/queue can
+wrap this service later without changing its contract.
+
+**Deferred**
+HTTP controllers/routes, Drizzle persistence (`SimulationRepository`), the
+BullMQ `SimulationQueue`, the worker process entry point, the simulation-config
+Zod boundary, and the `SimulationService` façade that composes them. The
+orchestrator accepts already-validated snapshot/config types until those
+boundaries exist.
 
 **Important**
 The Simulation module orchestrates execution; it does not contain the simulation engine's internal behavior.
