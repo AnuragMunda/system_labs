@@ -11,9 +11,11 @@
  * two concurrent starts, or a cancel racing a completion) can never both win.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 
 import db from "@/infrastructure/database/db.js";
+import { architecturesTable } from "@/infrastructure/database/schema/architectures.js";
+import { projectsTable } from "@/infrastructure/database/schema/projects.js";
 import { simulationsTable } from "@/infrastructure/database/schema/simulations.js";
 import type { SimulationStatus } from "@/domain/simulation/simulation.types.js";
 import { InternalServerError, NotFoundError } from "@/lib/apiError.js";
@@ -73,6 +75,91 @@ export class SimulationRepository {
     }
 
     return simulation;
+  }
+
+  /**
+   * Returns a page of simulations, newest first, restricted to architectures in
+   * projects owned by `ownerId`. Optional `architectureId`/`projectId` filters
+   * narrow within that scope. Reads are not wrapped because they don't mutate
+   * data.
+   */
+  async findPaginated(filters: {
+    ownerId: string;
+    architectureId?: string;
+    projectId?: string;
+    page: number;
+    limit: number;
+  }): Promise<SimulationRow[]> {
+    const offset = (filters.page - 1) * filters.limit;
+
+    return db
+      .select()
+      .from(simulationsTable)
+      .where(this.scope(filters))
+      .orderBy(desc(simulationsTable.createdAt), desc(simulationsTable.id))
+      .limit(filters.limit)
+      .offset(offset);
+  }
+
+  /** Counts simulations matching the same scope as `findPaginated`. */
+  async count(filters: {
+    ownerId: string;
+    architectureId?: string;
+    projectId?: string;
+  }): Promise<number> {
+    const [result] = await db
+      .select({ count: count() })
+      .from(simulationsTable)
+      .where(this.scope(filters));
+
+    return Number(result?.count ?? 0);
+  }
+
+  /** Builds the shared ownership + optional-filter predicate for list reads. */
+  private scope(filters: {
+    ownerId: string;
+    architectureId?: string;
+    projectId?: string;
+  }) {
+    return and(
+      inArray(
+        simulationsTable.architectureId,
+        this.ownedArchitectures(filters.ownerId),
+      ),
+      filters.architectureId
+        ? eq(simulationsTable.architectureId, filters.architectureId)
+        : undefined,
+      filters.projectId
+        ? inArray(
+            simulationsTable.architectureId,
+            this.architecturesInProject(filters.projectId),
+          )
+        : undefined,
+    );
+  }
+
+  /** Subquery selecting ids of architectures whose project is owned by the user. */
+  private ownedArchitectures(ownerId: string) {
+    return db
+      .select({ id: architecturesTable.id })
+      .from(architecturesTable)
+      .where(
+        inArray(
+          architecturesTable.projectId,
+          db
+            .select({ id: projectsTable.id })
+            .from(projectsTable)
+            .where(eq(projectsTable.ownerId, ownerId)),
+        ),
+      );
+  }
+
+  /** Subquery selecting ids of architectures belonging to a single project. */
+  private architecturesInProject(projectId: string) {
+    return db
+      .select({ id: architecturesTable.id })
+      .from(architecturesTable)
+      .where(eq(architecturesTable.projectId, projectId));
   }
 
   /**

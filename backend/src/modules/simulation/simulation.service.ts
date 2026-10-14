@@ -30,9 +30,12 @@ import { ArchitectureRepository } from "../architecture/architecture.repository.
 import { ProjectRepository } from "../project/project.repository.js";
 import {
   CreateSimulationDto,
+  ListSimulationsQueryDto,
+  PaginatedResult,
   SimulationDetails,
   SimulationResultView,
   SimulationStatusView,
+  SimulationSummary,
 } from "./simulation.dto.js";
 import { SimulationExecutionManager } from "./simulation.execution.js";
 import {
@@ -118,9 +121,44 @@ export class SimulationService {
       id: simulation.id,
       status: simulation.status,
       currentTimeMs: simulation.currentTimeMs,
+      durationMs: simulation.config?.durationMs ?? null,
       startedAt: simulation.startedAt,
       completedAt: simulation.completedAt,
       error: simulation.error,
+    };
+  }
+
+  /**
+   * Returns a page of the caller's simulations, newest first, optionally scoped
+   * to a single architecture and/or project, along with pagination metadata.
+   * Each item is a lightweight summary; the captured snapshot and config are
+   * never included.
+   */
+  async getPaginated(
+    userId: string,
+    query: ListSimulationsQueryDto,
+  ): Promise<PaginatedResult<SimulationSummary>> {
+    const { architectureId, projectId, page, limit } = query;
+
+    const [items, total] = await Promise.all([
+      this.repository.findPaginated({
+        ownerId: userId,
+        architectureId,
+        projectId,
+        page,
+        limit,
+      }),
+      this.repository.count({ ownerId: userId, architectureId, projectId }),
+    ]);
+
+    return {
+      items: items.map((row) => this.toSummary(row)),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
@@ -272,6 +310,22 @@ export class SimulationService {
       sourceNodeId: row.sourceNodeId,
       config: row.config,
       snapshot: row.snapshot,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      error: row.error,
+      createdAt: row.createdAt,
+    };
+  }
+
+  /** Maps a row to the lightweight summary used by list responses. */
+  private toSummary(row: SimulationRow): SimulationSummary {
+    return {
+      id: row.id,
+      architectureId: row.architectureId,
+      status: row.status,
+      seed: row.seed,
+      currentTimeMs: row.currentTimeMs,
+      durationMs: row.config?.durationMs ?? null,
       startedAt: row.startedAt,
       completedAt: row.completedAt,
       error: row.error,

@@ -15,6 +15,7 @@ vi.mock("@/modules/simulation/index.js", () => ({
     findById: vi.fn(),
     getStatus: vi.fn(),
     getResults: vi.fn(),
+    getPaginated: vi.fn(),
     start: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
@@ -26,6 +27,7 @@ const { simulationService } =
   await import("../../../../src/modules/simulation/index.js");
 const {
   createSimulation,
+  getSimulations,
   getSimulationById,
   getSimulationStatus,
   getSimulationResults,
@@ -121,6 +123,84 @@ describe("createSimulation", () => {
     await flush();
 
     await vi.waitFor(() => expect(next).toHaveBeenCalledWith(error));
+  });
+});
+
+describe("getSimulations", () => {
+  it("lists the caller's simulations with parsed query defaults", async () => {
+    const req = mockAuthReq({ query: {} });
+    const res = mockRes();
+    const next = mockNext();
+
+    const page = {
+      items: [{ id: uuid }],
+      pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    };
+    vi.mocked(simulationService.getPaginated).mockResolvedValue(page as never);
+
+    await getSimulations(req, res, next);
+    await flush();
+
+    expect(simulationService.getPaginated).toHaveBeenCalledWith(uuid, {
+      page: 1,
+      limit: 20,
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: "Request successful",
+      data: page,
+    });
+  });
+
+  it("coerces and forwards filters", async () => {
+    const req = mockAuthReq({
+      query: { architectureId: uuid, projectId: uuid, page: "2", limit: "5" },
+    });
+    const res = mockRes();
+    const next = mockNext();
+
+    vi.mocked(simulationService.getPaginated).mockResolvedValue({
+      items: [],
+      pagination: { page: 2, limit: 5, total: 0, totalPages: 0 },
+    } as never);
+
+    await getSimulations(req, res, next);
+    await flush();
+
+    expect(simulationService.getPaginated).toHaveBeenCalledWith(uuid, {
+      architectureId: uuid,
+      projectId: uuid,
+      page: 2,
+      limit: 5,
+    });
+  });
+
+  it("passes a BadRequestError to next for an invalid query", async () => {
+    const req = mockAuthReq({ query: { limit: "999" } });
+    const res = mockRes();
+    const next = mockNext();
+
+    await getSimulations(req, res, next);
+    await flush();
+
+    expect(simulationService.getPaginated).not.toHaveBeenCalled();
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({
+      statusCode: 400,
+      code: "BAD_REQUEST",
+    });
+  });
+
+  it("passes an UnauthorizedError to next when there is no user", async () => {
+    const req = { query: {} } as unknown as Request;
+    const res = mockRes();
+    const next = mockNext();
+
+    await getSimulations(req, res, next);
+    await flush();
+
+    expect(simulationService.getPaginated).not.toHaveBeenCalled();
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 401 });
   });
 });
 

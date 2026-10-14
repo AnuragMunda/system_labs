@@ -65,3 +65,15 @@ export const createSimulationSchema = z.object({
   sourceNodeId: z.string().min(1),
   config: simulationConfigSchema,
 });
+
+/**
+ * Validates query params for listing simulations (pagination + optional
+ * architecture/project filters). Mirrors the list schemas used by the project
+ * and architecture modules.
+ */
+export const listSimulationsQuerySchema = z.object({
+  architectureId: z.uuid().optional(),
+  projectId: z.uuid().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});

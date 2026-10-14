@@ -16,7 +16,10 @@ import {
   asyncHandler,
 } from "@/lib/index.js";
 
-import { idParamSchema } from "./simulation.schema.js";
+import {
+  idParamSchema,
+  listSimulationsQuerySchema,
+} from "./simulation.schema.js";
 import { simulationService } from "./index.js";
 
 /** Returns the authenticated user's identity or throws. */
@@ -51,6 +54,23 @@ export const createSimulation = asyncHandler(
       simulation,
       "Simulation created successfully",
     );
+  },
+);
+
+/** GET /api/v1/simulations — paginated list of the caller's simulations. */
+export const getSimulations = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = requireUser(req);
+
+    const query = listSimulationsQuerySchema.safeParse(req.query);
+
+    if (!query.success) {
+      throw BadRequestError(query.error.message);
+    }
+
+    const result = await simulationService.getPaginated(user.id, query.data);
+
+    return ApiResponse.ok(res, result);
   },
 );
 

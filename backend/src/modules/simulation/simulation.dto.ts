@@ -16,10 +16,29 @@ import type {
   SimulationStatus,
 } from "@/domain/simulation/simulation.types.js";
 
-import { createSimulationSchema } from "./simulation.schema.js";
+import {
+  createSimulationSchema,
+  listSimulationsQuerySchema,
+} from "./simulation.schema.js";
 
 /** Payload accepted when creating a simulation. */
 export type CreateSimulationDto = z.infer<typeof createSimulationSchema>;
+
+/** Query params accepted when listing simulations. */
+export type ListSimulationsQueryDto = z.infer<
+  typeof listSimulationsQuerySchema
+>;
+
+/** Standard paginated result envelope returned by list operations. */
+export interface PaginatedResult<T> {
+  items: T[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
 
 /** Row shape persisted when creating a simulation. */
 export interface CreateSimulationRecord {
@@ -66,10 +85,24 @@ export interface SimulationDetails {
 export interface SimulationStatusView {
   id: string;
   status: SimulationStatus;
+  /** Simulation-time cursor (ms since start) reflecting engine progress. */
   currentTimeMs: number;
+  /** Configured total duration in ms, used to derive progress; null if unknown. */
+  durationMs: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
   error: string | null;
+}
+
+/**
+ * A list-friendly summary of a run. Extends the status view with the identifying
+ * metadata a dashboard needs, deliberately omitting the (potentially large)
+ * snapshot, config, and aggregate report.
+ */
+export interface SimulationSummary extends SimulationStatusView {
+  architectureId: string;
+  seed: number | null;
+  createdAt: Date;
 }
 
 /** A simulation's details together with its persisted aggregate report. */

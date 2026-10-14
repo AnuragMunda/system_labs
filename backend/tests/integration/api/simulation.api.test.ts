@@ -659,4 +659,156 @@ describeDb("Simulations API", () => {
       });
     });
   });
+
+  describe("GET /api/v1/simulations", () => {
+    it("returns only the caller's simulations, newest first, as lightweight summaries", async () => {
+      const other = await createAuthenticatedUser();
+      const otherProject = await createProjectForUser(other.id);
+      const otherArchitecture = await createArchitectureAs(
+        other.accessToken,
+        otherProject.id,
+      ).expect(201);
+      await createSimulationAs(
+        other.accessToken,
+        otherArchitecture.body.data.id,
+      ).expect(201);
+
+      const { architectureId } = await ownedArchitecture();
+      const first = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      const second = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+
+      const res = await request(app)
+        .get("/api/v1/simulations")
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 2,
+        totalPages: 1,
+      });
+      expect(
+        res.body.data.items.map((item: { id: string }) => item.id),
+      ).toEqual([second.body.data.id, first.body.data.id]);
+
+      for (const item of res.body.data.items) {
+        expect(item).not.toHaveProperty("snapshot");
+        expect(item).not.toHaveProperty("config");
+        expect(item).not.toHaveProperty("result");
+        expect(item).toMatchObject({
+          architectureId,
+          status: "created",
+          seed: 0,
+          currentTimeMs: 0,
+          durationMs: 1000,
+          startedAt: null,
+          completedAt: null,
+          error: null,
+        });
+        expect(typeof item.createdAt).toBe("string");
+      }
+    });
+
+    it("filters by architectureId and projectId", async () => {
+      const { project, architectureId } = await ownedArchitecture();
+      await createSimulationAs(accessToken, architectureId).expect(201);
+      await createSimulationAs(accessToken, architectureId).expect(201);
+
+      const otherArchitecture = await createArchitectureAs(
+        accessToken,
+        project.id,
+        { name: "Secondary" },
+      ).expect(201);
+      await createSimulationAs(
+        accessToken,
+        otherArchitecture.body.data.id,
+      ).expect(201);
+
+      const byArchitecture = await request(app)
+        .get(`/api/v1/simulations?architectureId=${architectureId}`)
+        .set(...authHeader());
+      expect(byArchitecture.status).toBe(200);
+      expect(byArchitecture.body.data.pagination.total).toBe(2);
+      for (const item of byArchitecture.body.data.items) {
+        expect(item.architectureId).toBe(architectureId);
+      }
+
+      const byProject = await request(app)
+        .get(`/api/v1/simulations?projectId=${project.id}`)
+        .set(...authHeader());
+      expect(byProject.status).toBe(200);
+      expect(byProject.body.data.pagination.total).toBe(3);
+    });
+
+    it("paginates with page and limit", async () => {
+      const { architectureId } = await ownedArchitecture();
+      for (let i = 0; i < 3; i += 1) {
+        await createSimulationAs(accessToken, architectureId).expect(201);
+      }
+
+      const res = await request(app)
+        .get("/api/v1/simulations?page=2&limit=2")
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.pagination).toEqual({
+        page: 2,
+        limit: 2,
+        total: 3,
+        totalPages: 2,
+      });
+      expect(res.body.data.items).toHaveLength(1);
+    });
+
+    it("returns 400 for an invalid query", async () => {
+      const res = await request(app)
+        .get("/api/v1/simulations?architectureId=not-a-uuid")
+        .set(...authHeader());
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 401 without an access token", async () => {
+      const res = await request(app).get("/api/v1/simulations");
+
+      expect(res.status).toBe(401);
+      expect(res.body).toMatchObject({ success: false, code: "UNAUTHORIZED" });
+    });
+  });
+
+  describe("response contract", () => {
+    it("exposes durationMs and ISO date strings on the status view", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/status`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        id: simulation.id,
+        status: "completed",
+        durationMs: 1000,
+      });
+      expect(res.body.data.currentTimeMs).toEqual(expect.any(Number));
+      expect(res.body.data.startedAt).toEqual(expect.any(String));
+      expect(res.body.data.completedAt).toEqual(expect.any(String));
+    });
+  });
 });

@@ -91,6 +91,8 @@ const row: SimulationRow = {
 const repo = {
   create: vi.fn(),
   findById: vi.fn(),
+  findPaginated: vi.fn(),
+  count: vi.fn(),
 } as unknown as SimulationRepository;
 
 const archRepo = { findById: vi.fn() } as unknown as ArchitectureRepository;
@@ -323,6 +325,7 @@ describe("SimulationService.getStatus", () => {
       id: simId,
       status: "running",
       currentTimeMs: 250,
+      durationMs: config.durationMs,
       startedAt,
       completedAt: null,
       error: null,
@@ -352,6 +355,86 @@ describe("SimulationService.getStatus", () => {
     await expect(service.getStatus(simId, otherUserId)).rejects.toMatchObject({
       statusCode: 404,
     });
+  });
+});
+
+describe("SimulationService.getPaginated", () => {
+  it("returns lightweight summaries with pagination metadata", async () => {
+    vi.mocked(repo.findPaginated).mockResolvedValue([row]);
+    vi.mocked(repo.count).mockResolvedValue(1);
+
+    const result = await service.getPaginated(ownerId, {
+      page: 1,
+      limit: 20,
+    });
+
+    expect(repo.findPaginated).toHaveBeenCalledWith({
+      ownerId,
+      architectureId: undefined,
+      projectId: undefined,
+      page: 1,
+      limit: 20,
+    });
+    expect(repo.count).toHaveBeenCalledWith({
+      ownerId,
+      architectureId: undefined,
+      projectId: undefined,
+    });
+    expect(result.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: 1,
+      totalPages: 1,
+    });
+    expect(result.items).toEqual([
+      {
+        id: simId,
+        architectureId,
+        status: "created",
+        seed: 0,
+        currentTimeMs: 0,
+        durationMs: config.durationMs,
+        startedAt: null,
+        completedAt: null,
+        error: null,
+        createdAt: row.createdAt,
+      },
+    ]);
+    expect("snapshot" in result.items[0]).toBe(false);
+    expect("config" in result.items[0]).toBe(false);
+  });
+
+  it("forwards architecture/project filters and computes total pages", async () => {
+    vi.mocked(repo.findPaginated).mockResolvedValue([]);
+    vi.mocked(repo.count).mockResolvedValue(45);
+
+    const result = await service.getPaginated(ownerId, {
+      architectureId,
+      projectId,
+      page: 3,
+      limit: 20,
+    });
+
+    expect(repo.findPaginated).toHaveBeenCalledWith({
+      ownerId,
+      architectureId,
+      projectId,
+      page: 3,
+      limit: 20,
+    });
+    expect(result.items).toEqual([]);
+    expect(result.pagination.totalPages).toBe(3);
+  });
+
+  it("reports durationMs as null when the stored config lacks it", async () => {
+    vi.mocked(repo.findPaginated).mockResolvedValue([
+      { ...row, config: {} as never },
+    ]);
+    vi.mocked(repo.count).mockResolvedValue(1);
+
+    const result = await service.getPaginated(ownerId, { page: 1, limit: 20 });
+
+    expect(result.items[0]?.durationMs).toBeNull();
   });
 });
 

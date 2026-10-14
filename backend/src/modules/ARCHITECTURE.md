@@ -233,9 +233,14 @@ actions with a 409 instead of duplicating transition rules.
 `POST /:id/start` claims the run and responds **202 Accepted**; execution
 completes in the background and persists the final status plus the aggregate
 `SimulationMetrics` into `simulations.result`. Engine failures after the 202 are
-surfaced through `/status` and `/results`, not as an HTTP 5xx. Endpoints: create,
-details, status, results, start, pause, resume, cancel (mounted at
-`/api/v1/simulations`).
+surfaced through `/status` and `/results`, not as an HTTP 5xx. Endpoints: list,
+create, details, status, results, start, pause, resume, cancel (mounted at
+`/api/v1/simulations`). `GET /` returns an owner-scoped, newest-first,
+paginated set of lightweight `SimulationSummary` rows (no snapshot/config/
+report), optionally filtered by `architectureId`/`projectId`. `/status` includes
+`durationMs` alongside `currentTimeMs` so clients can render progress. The
+frontend-facing request/response/error contract is documented in
+[`simulation/API.md`](./simulation/API.md).
 
 **Deferred**
 The BullMQ `SimulationQueue` and the worker process entry point (execution is

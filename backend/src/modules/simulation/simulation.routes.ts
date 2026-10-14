@@ -2,9 +2,11 @@
  * @file simulation.routes.ts
  *
  * @description Express router mounting the simulation module's endpoints.
- * Reads (details/status/results) inherit the parent project's visibility and so
- * use `authenticateOptional`; create and lifecycle controls require an
- * authenticated user and are additionally checked for ownership in the service.
+ * The list requires an authenticated owner (like the project/architecture
+ * lists); single-run reads (details/status/results) inherit the parent
+ * project's visibility and so use `authenticateOptional`; create and lifecycle
+ * controls require an authenticated user and are additionally checked for
+ * ownership in the service.
  */
 
 import { Router } from "express";
@@ -20,6 +22,7 @@ import {
   createSimulation,
   getSimulationById,
   getSimulationResults,
+  getSimulations,
   getSimulationStatus,
   pauseSimulation,
   resumeSimulation,
@@ -31,6 +34,7 @@ const simulationRouter: Router = Router();
 
 simulationRouter
   .route("/")
+  .get(authenticate, getSimulations)
   .post(authenticate, validate(createSimulationSchema), createSimulation);
 
 simulationRouter.route("/:id").get(authenticateOptional, getSimulationById);
