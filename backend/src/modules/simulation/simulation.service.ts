@@ -52,7 +52,8 @@ export class SimulationService {
   /**
    * Creates a simulation for an architecture the caller owns, capturing an
    * immutable snapshot of the architecture graph. The requested traffic source
-   * is validated against that snapshot before anything is persisted.
+   * and every scheduled failure node are validated against that snapshot before
+   * anything is persisted.
    */
   async create(
     userId: string,
@@ -73,6 +74,14 @@ export class SimulationService {
       throw BadRequestError(
         `Traffic source node not found in architecture: ${data.sourceNodeId}`,
       );
+    }
+
+    for (const failure of data.config.failures ?? []) {
+      if (!snapshot.nodes.some((node) => node.id === failure.nodeId)) {
+        throw BadRequestError(
+          `Failure node not found in architecture: ${failure.nodeId}`,
+        );
+      }
     }
 
     const seed = data.config.randomSeed ?? 0;

@@ -24,6 +24,8 @@ export const ApiMessages = Object.freeze({
     NOT_FOUND: "Resource not found",
     CONFLICT: "Resource already exists",
     VALIDATION_FAILED: "Validation failed",
+    MALFORMED_JSON: "Malformed JSON in request body",
+    PAYLOAD_TOO_LARGE: "Request payload is too large",
   },
 
   /** Messages for server-side failures. */

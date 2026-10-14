@@ -179,6 +179,46 @@ describe("SimulationService.create", () => {
     expect(repo.create).not.toHaveBeenCalled();
   });
 
+  it("rejects a scheduled failure whose node is not in the snapshot with a 400", async () => {
+    stubsOwned();
+
+    const promise = service.create(ownerId, {
+      ...dto,
+      config: {
+        ...config,
+        failures: [{ nodeId: "missing", failedAtMs: 500 }],
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      statusCode: 400,
+      code: "BAD_REQUEST",
+      message: "Failure node not found in architecture: missing",
+    });
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts scheduled failures whose nodes exist in the snapshot", async () => {
+    stubsOwned();
+    vi.mocked(repo.create).mockResolvedValue(row);
+
+    await service.create(ownerId, {
+      ...dto,
+      config: {
+        ...config,
+        failures: [{ nodeId: "client-1", failedAtMs: 500 }],
+      },
+    });
+
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          failures: [{ nodeId: "client-1", failedAtMs: 500 }],
+        }),
+      }),
+    );
+  });
+
   it("rejects creating a run under a project owned by someone else with a 403", async () => {
     stubsOwned();
 

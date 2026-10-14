@@ -222,11 +222,13 @@ ownership are deferred to the worker/queue step.
 **Implemented — Simulation HTTP API**
 `SimulationService` composes the execution manager with `SimulationRepository`
 and the architecture/project repositories. It validates the requested
-`sourceNodeId` against the captured snapshot (`simulationConfigSchema` is the
-config's Zod boundary), enforces the same rules as architectures (create/controls
-require owning the parent project; reads inherit the project's visibility), and
-reuses the engine's lifecycle matrix (`allowedFromStatuses`) to reject illegal
-control actions with a 409 instead of duplicating transition rules.
+`sourceNodeId` and every scheduled `failures[].nodeId` against the captured
+snapshot (`simulationConfigSchema` is the config's Zod boundary), so invalid
+topology references are rejected with a 400 at create time instead of failing
+mid-run. It enforces the same rules as architectures (create/controls require
+owning the parent project; reads inherit the project's visibility), and reuses
+the engine's lifecycle matrix (`allowedFromStatuses`) to reject illegal control
+actions with a 409 instead of duplicating transition rules.
 
 `POST /:id/start` claims the run and responds **202 Accepted**; execution
 completes in the background and persists the final status plus the aggregate
@@ -503,6 +505,18 @@ Contains implementation details for:
 - Authentication cookies.
 
 Domain and application services depend on interfaces/utility contracts rather than HTTP concerns.
+
+### HTTP Error Handling
+
+- `errorMiddleware` is the single terminal error handler. It maps `ApiError`
+  instances to their status/`code`/`details`, and always answers with the
+  `{ success: false, message, code }` envelope.
+- Body-parser failures are client errors, not 500s: malformed JSON
+  (`entity.parse.failed`) → 400 and oversized payloads (`entity.too.large`) → 413.
+- `validate` throws `BadRequestError("Validation failed", issues)` so the
+  response carries the summary message plus the structured Zod `details`.
+- `notFoundMiddleware` answers unmatched routes with a JSON 404 instead of
+  Express's default HTML response.
 
 ---
 

@@ -13,6 +13,7 @@ import cookieParser from "cookie-parser";
 import { logger } from "./lib/logger.js";
 import router from "./routes/index.js";
 import { errorMiddleware } from "./middlewares/errorMiddleware.js";
+import { notFoundMiddleware } from "./middlewares/notFoundMiddleware.js";
 import { env } from "./config/env.js";
 
 const app = express();
@@ -40,6 +41,9 @@ app.get("/", (_, res: Response) => {
 app.get("/health", (_, res: Response) => {
   res.status(200).json({ status: "OK", message: "Server is healthy." });
 });
+
+// Unknown routes receive a JSON 404 instead of Express's default HTML response.
+app.use(notFoundMiddleware);
 
 /// Global Error Handler
 app.use(errorMiddleware);

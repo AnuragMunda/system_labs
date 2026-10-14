@@ -71,7 +71,12 @@ describe("validate", () => {
     expect(thrown).toMatchObject({
       statusCode: 400,
       code: "BAD_REQUEST",
+      message: "Validation failed",
     });
+    expect((thrown as ApiError).details).toEqual([
+      expect.objectContaining({ path: "name" }),
+      expect.objectContaining({ path: "email" }),
+    ]);
     expect(next).not.toHaveBeenCalled();
   });
 });

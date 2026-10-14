@@ -16,6 +16,7 @@ export const HttpStatus = Object.freeze({
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
 
   // Server error codes
   INTERNAL_SERVER_ERROR: 500,

@@ -31,14 +31,15 @@ class ApiError extends Error {
   }
 }
 
-/** 400 error for invalid request data. Accepts optional validation details. */
-export const BadRequestError = (details?: unknown) =>
-  new ApiError(
-    ApiMessages.CLIENT_ERROR.BAD_REQUEST,
-    HttpStatus.BAD_REQUEST,
-    "BAD_REQUEST",
-    details,
-  );
+/**
+ * 400 error for invalid request data. The first argument, when supplied, becomes
+ * the response message (callers pass the specific reason); optional `details`
+ * carries machine-readable validation issues.
+ */
+export const BadRequestError = (
+  message: string = ApiMessages.CLIENT_ERROR.BAD_REQUEST,
+  details?: unknown,
+) => new ApiError(message, HttpStatus.BAD_REQUEST, "BAD_REQUEST", details);
 
 /** 401 error for missing or invalid authentication. */
 export const UnauthorizedError = (

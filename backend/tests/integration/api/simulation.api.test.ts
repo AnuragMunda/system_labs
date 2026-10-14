@@ -247,6 +247,50 @@ describeDb("Simulations API", () => {
       expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
     });
 
+    it("returns 400 when a scheduled failure references a node outside the snapshot", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await createSimulationAs(accessToken, architectureId, {
+        config: {
+          durationMs: 1000,
+          requestsPerSecond: 10,
+          failures: [{ nodeId: "missing-node", failedAtMs: 500 }],
+        },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({
+        success: false,
+        code: "BAD_REQUEST",
+        message: "Failure node not found in architecture: missing-node",
+      });
+    });
+
+    it("returns 400 with structured validation details when the config is incomplete", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await request(app)
+        .post("/api/v1/simulations")
+        .set(...authHeader())
+        .send({
+          architectureId,
+          sourceNodeId: "client-1",
+          config: { requestsPerSecond: 10 },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({
+        success: false,
+        code: "BAD_REQUEST",
+        message: "Validation failed",
+      });
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "config.durationMs" }),
+        ]),
+      );
+    });
+
     it("returns 400 when sourceNodeId is missing", async () => {
       const { architectureId } = await ownedArchitecture();
 
@@ -458,6 +502,26 @@ describeDb("Simulations API", () => {
       expect(res.status).toBe(409);
       expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
     });
+
+    it("rejects lifecycle controls from a non-owner with a 403", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      for (const action of ["pause", "resume", "cancel"]) {
+        const res = await request(app)
+          .post(`/api/v1/simulations/${simulation.id}/${action}`)
+          .set("Authorization", `Bearer ${other.accessToken}`);
+
+        expect(res.status).toBe(403);
+        expect(res.body).toMatchObject({
+          success: false,
+          code: "FORBIDDEN",
+        });
+      }
+
+      const found = await repo.findById(simulation.id);
+      expect(found.status).toBe("created");
+    });
   });
 
   describe("GET /api/v1/simulations/:id", () => {
@@ -564,6 +628,35 @@ describeDb("Simulations API", () => {
 
       expect(res.status).toBe(404);
       expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("allows an anonymous caller to read results for a completed run in a PUBLIC project", async () => {
+      const project = await createOwnerProject({ visibility: "PUBLIC" });
+      const architecture = await createArchitectureAs(
+        accessToken,
+        project.id,
+      ).expect(201);
+      const simulation = await createSimulationAs(
+        accessToken,
+        architecture.body.data.id,
+      ).expect(201);
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.body.data.id}/start`)
+        .set(...authHeader())
+        .expect(202);
+
+      await waitForTerminal(simulation.body.data.id);
+
+      const res = await request(app).get(
+        `/api/v1/simulations/${simulation.body.data.id}/results`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.simulation.status).toBe("completed");
+      expect(res.body.data.metrics).toMatchObject({
+        simulationId: simulation.body.data.id,
+      });
     });
   });
 });

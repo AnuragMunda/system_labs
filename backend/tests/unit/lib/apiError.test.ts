@@ -85,7 +85,17 @@ describe("error factories", () => {
 
   it("BadRequestError passes details through", () => {
     const details = { issue: "missing name" };
-    expect(BadRequestError(details).details).toEqual(details);
+    expect(BadRequestError("Invalid body", details).details).toEqual(details);
+  });
+
+  it("BadRequestError uses the supplied message", () => {
+    expect(BadRequestError("No fields provided.").message).toBe(
+      "No fields provided.",
+    );
+  });
+
+  it("BadRequestError defaults to the generic message", () => {
+    expect(BadRequestError().message).toBe("Invalid request data");
   });
 
   it("InternalServerError uses a default message", () => {

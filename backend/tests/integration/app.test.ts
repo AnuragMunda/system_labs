@@ -26,9 +26,29 @@ describeDb("app", () => {
     expect(res.body).toEqual({ status: "OK", message: "Server is healthy." });
   });
 
-  it("returns 404 for an unknown route", async () => {
+  it("returns a JSON 404 for an unknown route", async () => {
     const res = await request(app).get("/api/v1/does-not-exist");
 
     expect(res.status).toBe(404);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body).toEqual({
+      success: false,
+      message: "Resource not found",
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("returns 400 for a malformed JSON body", async () => {
+    const res = await request(app)
+      .post("/api/v1/simulations")
+      .set("Content-Type", "application/json")
+      .send('{"architectureId":');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      success: false,
+      message: "Malformed JSON in request body",
+      code: "BAD_REQUEST",
+    });
   });
 });
