@@ -1,0 +1,521 @@
+/**
+ * @file simulation.api.test.ts
+ *
+ * @description Integration tests for the simulation HTTP endpoints, exercised
+ * through supertest against the real app, database, and orchestrator: creation
+ * and ownership rules, synchronous run-to-completion, persisted results,
+ * lifecycle conflicts, and reads that inherit the parent project's visibility.
+ */
+
+import request from "supertest";
+import { describe, it, expect, beforeEach } from "vitest";
+
+import app from "../../../src/app.js";
+import { resetDb, getTestDatabaseUrl } from "../helpers/db.js";
+import {
+  createProjectForUser,
+  createUser,
+  validArchitecture,
+} from "../helpers/fixtures.js";
+import { SimulationRepository } from "../../../src/modules/simulation/simulation.repository.js";
+
+const describeDb = process.env.TEST_DB_UNAVAILABLE ? describe.skip : describe;
+
+const repo = new SimulationRepository();
+
+/** Identity and access token of the test's primary (logged-in) user. */
+let ownerId = "";
+let accessToken = "";
+
+/**
+ * Creates a user, logs them in, and returns their id plus an access token. The
+ * first user created is also captured as the primary user for the test.
+ */
+async function createAuthenticatedUser() {
+  const { user, password } = await createUser();
+  const res = await request(app)
+    .post("/api/v1/auth/login")
+    .send({ email: user.email, password });
+
+  const created = {
+    id: user.id,
+    accessToken: res.body.data.accessToken as string,
+  };
+
+  if (!ownerId) {
+    ownerId = created.id;
+    accessToken = created.accessToken;
+  }
+
+  return created;
+}
+
+/** The auth header attached to requests acting as the primary user. */
+function authHeader() {
+  return ["Authorization", `Bearer ${accessToken}`] as const;
+}
+
+/** Creates a project owned by the current primary user. */
+async function createOwnerProject(overrides: object = {}) {
+  return createProjectForUser(ownerId, overrides);
+}
+
+/** Creates an architecture through the API as the caller. */
+function createArchitectureAs(
+  token: string,
+  projectId: string,
+  overrides: object = {},
+) {
+  return request(app)
+    .post("/api/v1/architectures")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ ...validArchitecture(projectId), ...overrides });
+}
+
+/** Creates a simulation through the API as the caller. */
+function createSimulationAs(
+  token: string,
+  architectureId: string,
+  overrides: object = {},
+) {
+  return request(app)
+    .post("/api/v1/simulations")
+    .set("Authorization", `Bearer ${token}`)
+    .send({
+      architectureId,
+      sourceNodeId: "client-1",
+      config: { durationMs: 1000, requestsPerSecond: 10 },
+      ...overrides,
+    });
+}
+
+/** Creates an owned architecture and returns its id and parent project. */
+async function ownedArchitecture() {
+  const project = await createOwnerProject();
+  const created = await createArchitectureAs(accessToken, project.id).expect(
+    201,
+  );
+
+  return { project, architectureId: created.body.data.id as string };
+}
+
+/** Creates an owned simulation and returns its response body data. */
+async function ownedSimulation(overrides: object = {}) {
+  const { project, architectureId } = await ownedArchitecture();
+  const created = await createSimulationAs(
+    accessToken,
+    architectureId,
+    overrides,
+  ).expect(201);
+
+  return { project, architectureId, simulation: created.body.data };
+}
+
+describeDb("Simulations API", () => {
+  beforeEach(async () => {
+    await resetDb(getTestDatabaseUrl());
+    ownerId = "";
+    accessToken = "";
+    await createAuthenticatedUser();
+  });
+
+  describe("POST /api/v1/simulations", () => {
+    it("creates a simulation for the caller's architecture and responds with 201", async () => {
+      const { project, architectureId } = await ownedArchitecture();
+
+      const res = await createSimulationAs(accessToken, architectureId);
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toBe("Simulation created successfully");
+      expect(res.body.data).toMatchObject({
+        architectureId,
+        status: "created",
+        seed: 0,
+        currentTimeMs: 0,
+      });
+      expect(res.body.data.id).toEqual(expect.any(String));
+      expect(res.body.data.createdAt).toBeDefined();
+      // The persisted report must not leak through the create response.
+      expect(res.body.data).not.toHaveProperty("result");
+
+      const found = await repo.findById(res.body.data.id);
+      expect(found.architectureId).toBe(architectureId);
+      expect(found.status).toBe("created");
+      expect(found.result).toBeNull();
+      expect(project.id).toEqual(expect.any(String));
+    });
+
+    it("persists the seed supplied via config.randomSeed", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await createSimulationAs(accessToken, architectureId, {
+        config: { durationMs: 1000, requestsPerSecond: 10, randomSeed: 7 },
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.seed).toBe(7);
+
+      const found = await repo.findById(res.body.data.id);
+      expect(found.seed).toBe(7);
+    });
+
+    it("rejects creating a run for an architecture owned by someone else", async () => {
+      const other = await createAuthenticatedUser();
+      const otherProject = await createProjectForUser(other.id);
+      const created = await createArchitectureAs(
+        other.accessToken,
+        otherProject.id,
+      ).expect(201);
+
+      const res = await createSimulationAs(accessToken, created.body.data.id);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ success: false, code: "FORBIDDEN" });
+    });
+
+    it("returns 404 when the architecture does not exist", async () => {
+      const res = await createSimulationAs(
+        accessToken,
+        "5b47bb24-2f9b-4e40-a1c5-4d2d5bce0f91",
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("returns 400 when the source node is not in the snapshot", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await createSimulationAs(accessToken, architectureId, {
+        sourceNodeId: "missing-node",
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 400 when a scheduled failure is not before the duration", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await createSimulationAs(accessToken, architectureId, {
+        config: {
+          durationMs: 1000,
+          requestsPerSecond: 10,
+          failures: [{ nodeId: "api-1", failedAtMs: 1500 }],
+        },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 400 when sourceNodeId is missing", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await request(app)
+        .post("/api/v1/simulations")
+        .set(...authHeader())
+        .send({
+          architectureId,
+          config: { durationMs: 1000, requestsPerSecond: 10 },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 401 without an access token", async () => {
+      const { architectureId } = await ownedArchitecture();
+
+      const res = await request(app)
+        .post("/api/v1/simulations")
+        .send({
+          architectureId,
+          sourceNodeId: "client-1",
+          config: { durationMs: 1000, requestsPerSecond: 10 },
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toMatchObject({ success: false, code: "UNAUTHORIZED" });
+    });
+  });
+
+  describe("POST /api/v1/simulations/:id/start", () => {
+    it("runs to completion, persists the report, and responds with metrics", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe("Simulation started successfully");
+      expect(res.body.data.simulation.status).toBe("completed");
+      expect(res.body.data.metrics).toMatchObject({
+        simulationId: simulation.id,
+      });
+
+      const found = await repo.findById(simulation.id);
+      expect(found.status).toBe("completed");
+      expect(found.completedAt).toBeInstanceOf(Date);
+      expect(found.result).not.toBeNull();
+      expect(found.result).toMatchObject({ simulationId: simulation.id });
+    });
+
+    it("exposes the persisted report through the results endpoint", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(200);
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/results`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.simulation.status).toBe("completed");
+      expect(res.body.data.metrics).toMatchObject({
+        simulationId: simulation.id,
+      });
+    });
+
+    it("reports completed through the status endpoint", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(200);
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/status`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        id: simulation.id,
+        status: "completed",
+      });
+      expect(res.body.data.completedAt).toBeDefined();
+    });
+
+    it("returns 409 when starting a simulation that already completed", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(200);
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
+    });
+
+    it("rejects starting a run owned by someone else", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set("Authorization", `Bearer ${other.accessToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ success: false, code: "FORBIDDEN" });
+    });
+
+    it("returns 400 for a non-uuid id", async () => {
+      const res = await request(app)
+        .post("/api/v1/simulations/not-a-uuid/start")
+        .set(...authHeader());
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 404 for a valid uuid that does not exist", async () => {
+      const res = await request(app)
+        .post("/api/v1/simulations/5b47bb24-2f9b-4e40-a1c5-4d2d5bce0f91/start")
+        .set(...authHeader());
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("returns 401 without an access token", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app).post(
+        `/api/v1/simulations/${simulation.id}/start`,
+      );
+
+      expect(res.status).toBe(401);
+      expect(res.body).toMatchObject({ success: false, code: "UNAUTHORIZED" });
+    });
+  });
+
+  describe("POST /api/v1/simulations/:id lifecycle controls", () => {
+    it("cancels a created simulation", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/cancel`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe("cancelled");
+
+      const found = await repo.findById(simulation.id);
+      expect(found.status).toBe("cancelled");
+    });
+
+    it("returns 409 when pausing a created simulation", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/pause`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
+    });
+
+    it("returns 409 when resuming a created simulation", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/resume`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
+    });
+
+    it("returns 409 when cancelling a completed simulation", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(200);
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/cancel`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
+    });
+  });
+
+  describe("GET /api/v1/simulations/:id", () => {
+    it("allows the owner to read a run in a PRIVATE project", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        id: simulation.id,
+        status: "created",
+      });
+      expect(res.body.data).not.toHaveProperty("result");
+    });
+
+    it("hides a run in a PRIVATE project from an anonymous caller", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app).get(
+        `/api/v1/simulations/${simulation.id}`,
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("hides a run in a PRIVATE project from another user", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}`)
+        .set("Authorization", `Bearer ${other.accessToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("allows an anonymous caller to read a run in a PUBLIC project", async () => {
+      const project = await createOwnerProject({ visibility: "PUBLIC" });
+      const created = await createArchitectureAs(
+        accessToken,
+        project.id,
+      ).expect(201);
+      const sim = await createSimulationAs(
+        accessToken,
+        created.body.data.id,
+      ).expect(201);
+
+      const res = await request(app).get(
+        `/api/v1/simulations/${sim.body.data.id}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.id).toBe(sim.body.data.id);
+    });
+
+    it("returns 400 for a non-uuid id", async () => {
+      const res = await request(app).get("/api/v1/simulations/not-a-uuid");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ success: false, code: "BAD_REQUEST" });
+    });
+
+    it("returns 404 for a valid uuid that does not exist", async () => {
+      const res = await request(app).get(
+        "/api/v1/simulations/5b47bb24-2f9b-4e40-a1c5-4d2d5bce0f91",
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+  });
+
+  describe("GET /api/v1/simulations/:id/results", () => {
+    it("returns 404 before a run has produced a report", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/results`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
+    it("hides results for a run in a PRIVATE project from another user", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(200);
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/results`)
+        .set("Authorization", `Bearer ${other.accessToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+  });
+});

@@ -33,6 +33,10 @@ Simulation Session (prepares load/failures/autoscaling)
 Simulation Engine
 ```
 
+The `Simulation Queue`/`Simulation Worker` steps are the target design but are
+not built yet: today the Simulation API drives the session/engine synchronously
+in-process (`SimulationService` → `SimulationOrchestrator`).
+
 Modules should communicate through explicit service/domain interfaces rather than reaching into another module's internals.
 
 ---
@@ -149,9 +153,10 @@ Modules should communicate through explicit service/domain interfaces rather tha
 **Interfaces**
 
 - `SimulationOrchestrator` (implemented)
-- `SimulationService`
-- `SimulationRepository`
-- `SimulationQueue`
+- `SimulationService` (implemented)
+- `SimulationRepository` (implemented)
+- Simulation HTTP API (`simulation.controller.ts` / `simulation.routes.ts`) (implemented)
+- `SimulationQueue` (deferred)
 
 **Dependencies**
 
@@ -182,12 +187,27 @@ Execution is synchronous and in-process: the engine drives a virtual clock and
 never sleeps, so a full run is a bounded loop. A background worker/queue can
 wrap this service later without changing its contract.
 
+**Implemented — Simulation HTTP API**
+`SimulationService` composes the orchestrator with `SimulationRepository` and the
+architecture/project repositories. It validates the requested `sourceNodeId`
+against the captured snapshot (`simulationConfigSchema` is the config's Zod
+boundary), enforces the same rules as architectures (create/controls require
+owning the parent project; reads inherit the project's visibility), and reuses
+the engine's lifecycle matrix (`allowedFromStatuses`) to reject illegal control
+actions with a 409 instead of duplicating transition rules.
+
+Because there is no queue/worker yet, `POST /:id/start` runs the simulation to
+completion synchronously and persists the final status plus the aggregate
+`SimulationMetrics` into `simulations.result`; the engine's exceptions are
+mapped to 4xx/5xx and a failed run is persisted as `failed`. Endpoints: create,
+details, status, results, start, pause, resume, cancel (mounted at
+`/api/v1/simulations`).
+
 **Deferred**
-HTTP controllers/routes, Drizzle persistence (`SimulationRepository`), the
-BullMQ `SimulationQueue`, the worker process entry point, the simulation-config
-Zod boundary, and the `SimulationService` façade that composes them. The
-orchestrator accepts already-validated snapshot/config types until those
-boundaries exist.
+The BullMQ `SimulationQueue` and the worker process entry point (execution is
+currently in-process). Simulation event/metric _sample_ persistence
+(`simulation_events`, `metrics`) is also still deferred; only the final aggregate
+report is stored.
 
 **Important**
 The Simulation module orchestrates execution; it does not contain the simulation engine's internal behavior.
@@ -357,9 +377,10 @@ The Simulation module orchestrates execution; it does not contain the simulation
 - A lost network transmission is detected at link latency, not at the moment the
   packet is dropped, so a `network_packet_loss` failure fires after the latency
   window elapses.
-- Simulation configuration has no Zod boundary yet (the API schema will define
-  it); engine-side numeric config is not exhaustively `Number.isFinite`-hardened
-  beyond the simulation clock.
+- Simulation configuration is now validated at the API boundary
+  (`simulationConfigSchema`); the engine itself still does not exhaustively
+  `Number.isFinite`-harden numeric config beyond the simulation clock, so it is
+  not safe against unvalidated callers.
 - Several documented config fields are accepted but unused by the MVP engine
   (`capacity`, `cpu`, `memory`, `traffic`, `timeoutMs`, `simulationSpeed`,
   `trafficRate`).
@@ -592,6 +613,7 @@ Unique on `(project_id, name)`.
 | current_time_ms                        | integer   | default 0; engine progress cursor                                            |
 | config                                 | jsonb     | `SimulationConfig`, nullable                                                 |
 | snapshot                               | jsonb     | `ArchitectureGraph` snapshot, nullable                                       |
+| result                                 | jsonb     | `SimulationMetrics` aggregate report, nullable until the run finishes        |
 | started_at / completed_at / created_at | timestamp | lifecycle + creation                                                         |
 
 **simulation_events** (`schema/simulations.ts`) — events emitted during a run, indexed by simulation + timestamp.
@@ -625,6 +647,7 @@ Defined in `schema/types/types.ts` and typed via the domain layer:
 
 - **`ArchitectureGraph`** — `{ nodes: ArchitectureNode[], edges: ArchitectureEdge[] }`. Stored on architectures and used as the immutable `simulation.snapshot`.
 - **`SimulationConfig`** — configuration driving a simulation run (re-exported from `domain/simulation/simulation.types.ts`).
+- **`SimulationMetrics`** — the immutable aggregate report of a finished run (re-exported from `domain/simulation/metrics.types.ts`); persisted in `simulations.result`.
 - **`ScenarioEvent`** — a discriminated union on `type`:
   `traffic_spike`, `service_failure`, `service_recovery`, `network_latency`, `packet_loss`.
   All variants share `id` and `timestampMs`; typed variant fields distinguish targets and rates.

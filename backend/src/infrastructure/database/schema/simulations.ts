@@ -19,7 +19,11 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { architecturesTable } from "./architectures.js";
-import { ArchitectureGraph, SimulationConfig } from "./types/types.js";
+import {
+  ArchitectureGraph,
+  SimulationConfig,
+  SimulationMetrics,
+} from "./types/types.js";
 
 /** The lifecycle states a simulation can be in, stored in the database. */
 export const simulationStatusEnum = pgEnum("simulation_status", [
@@ -48,6 +52,10 @@ export const simulationsTable = pgTable(
 
     config: jsonb("config").$type<SimulationConfig>(),
     snapshot: jsonb("snapshot").$type<ArchitectureGraph>(),
+    // Persisted aggregate report for the finished run. Null until the run has
+    // produced results; only the derived metrics snapshot is stored, never
+    // mutable runtime state.
+    result: jsonb("result").$type<SimulationMetrics>(),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

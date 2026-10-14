@@ -1,14 +1,31 @@
 /**
  * @file index.ts
  *
- * @description Wires the simulation module's dependencies together (manual DI).
- * The orchestrator has no infrastructure dependencies, so a single instance is
- * exported for controllers to import.
+ * @description Wires the simulation module's dependencies together (manual DI):
+ * the orchestrator has no infrastructure dependencies, while the HTTP service
+ * receives the simulation, architecture, and project repositories so it can
+ * enforce ownership/visibility before driving a run. Controllers import the
+ * ready-to-use singleton service from here.
  */
 
 import { SimulationOrchestrator } from "./simulation.orchestrator.js";
+import { SimulationRepository } from "./simulation.repository.js";
+import { SimulationService } from "./simulation.service.js";
+import { ArchitectureRepository } from "../architecture/architecture.repository.js";
+import { ProjectRepository } from "../project/project.repository.js";
 
 export const simulationOrchestrator = new SimulationOrchestrator();
+
+const repository = new SimulationRepository();
+const architectureRepository = new ArchitectureRepository();
+const projectRepository = new ProjectRepository();
+
+export const simulationService = new SimulationService(
+  repository,
+  architectureRepository,
+  projectRepository,
+  simulationOrchestrator,
+);
 
 export { SimulationOrchestrator } from "./simulation.orchestrator.js";
 export type {

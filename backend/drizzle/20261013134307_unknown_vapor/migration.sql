@@ -1,0 +1,1 @@
+ALTER TABLE "simulations" ADD COLUMN "result" jsonb;

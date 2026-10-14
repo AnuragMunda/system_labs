@@ -9,6 +9,7 @@ import { ArchitectureNode } from "@/domain/architecture/component.types.js";
 import { ArchitectureEdge } from "@/domain/architecture/connection.types.js";
 
 export type { SimulationConfig } from "@/domain/simulation/simulation.types.js";
+export type { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
 
 /** JSONB shape of an architecture's graph: its nodes and edges. */
 export interface ArchitectureGraph {
