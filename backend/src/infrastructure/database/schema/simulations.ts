@@ -14,6 +14,7 @@ import {
   pgEnum,
   pgTable,
   real,
+  text,
   timestamp,
   uuid,
   varchar,
@@ -50,12 +51,19 @@ export const simulationsTable = pgTable(
     // Simulation-time cursor (ms since start) reflecting engine progress.
     currentTimeMs: integer("current_time_ms").notNull().default(0),
 
+    // The component generated traffic originates from. Persisted so a run can be
+    // reconstructed from its stored snapshot/config when execution begins.
+    sourceNodeId: varchar("source_node_id", { length: 255 }),
+
     config: jsonb("config").$type<SimulationConfig>(),
     snapshot: jsonb("snapshot").$type<ArchitectureGraph>(),
     // Persisted aggregate report for the finished run. Null until the run has
     // produced results; only the derived metrics snapshot is stored, never
     // mutable runtime state.
     result: jsonb("result").$type<SimulationMetrics>(),
+    // Human-readable reason a run ended in `failed` (engine error or an
+    // interrupted execution), otherwise null.
+    error: text("error"),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

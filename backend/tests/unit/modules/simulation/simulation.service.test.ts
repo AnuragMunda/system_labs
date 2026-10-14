@@ -2,26 +2,22 @@
  * @file simulation.service.test.ts
  *
  * @description Unit tests for SimulationService. The repositories and the
- * orchestrator are mocked, so the tests focus on the business rules: ownership
- * for create/controls, project-visibility reads, source-node validation,
- * lifecycle guards, persistence of the final report, and error mapping.
+ * execution manager are mocked, so the tests focus on the business rules:
+ * ownership for create/controls, project-visibility reads, source-node
+ * validation, lifecycle guards, and delegation of lifecycle transitions.
+ * Background execution itself is covered by simulation.execution.test.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { SimulationService } from "../../../../src/modules/simulation/simulation.service.js";
 import { SimulationRepository } from "../../../../src/modules/simulation/simulation.repository.js";
+import { SimulationExecutionManager } from "../../../../src/modules/simulation/simulation.execution.js";
 import { ArchitectureRepository } from "../../../../src/modules/architecture/architecture.repository.js";
 import { ProjectRepository } from "../../../../src/modules/project/project.repository.js";
-import { SimulationOrchestrator } from "../../../../src/modules/simulation/simulation.orchestrator.js";
 import { NotFoundError } from "../../../../src/lib/index.js";
 import type { ArchitectureGraph } from "../../../../src/domain/architecture/architecture.types.js";
 import type { SimulationConfig } from "../../../../src/domain/simulation/simulation.types.js";
-import type { SimulationMetrics } from "../../../../src/domain/simulation/metrics.types.js";
-import type {
-  SimulationReport,
-  SimulationSnapshot,
-} from "../../../../src/modules/simulation/simulation.orchestrator.types.js";
 
 type SimulationRow = Awaited<ReturnType<SimulationRepository["findById"]>>;
 type ArchitectureRow = Awaited<ReturnType<ArchitectureRepository["findById"]>>;
@@ -54,8 +50,6 @@ const graph: ArchitectureGraph = {
   edges: [],
 };
 
-const metrics = { simulationId: simId } as unknown as SimulationMetrics;
-
 const dto = { architectureId, sourceNodeId: "client-1", config };
 
 const architecture: ArchitectureRow = {
@@ -84,53 +78,33 @@ const row: SimulationRow = {
   status: "created",
   seed: 0,
   currentTimeMs: 0,
+  sourceNodeId: "client-1",
   config,
   snapshot: graph,
   result: null,
   startedAt: null,
   completedAt: null,
+  error: null,
   createdAt: new Date(),
 };
-
-const completedSnapshot: SimulationSnapshot = {
-  id: simId,
-  architectureId,
-  status: "completed",
-  seed: 0,
-  currentTimeMs: 1000,
-  config,
-  startedAt: new Date("2026-01-01T00:00:00Z"),
-  completedAt: new Date("2026-01-01T00:00:01Z"),
-  createdAt: new Date("2026-01-01T00:00:00Z"),
-};
-
-const report: SimulationReport = { simulation: completedSnapshot, metrics };
 
 const repo = {
   create: vi.fn(),
   findById: vi.fn(),
-  updateLifecycle: vi.fn(),
 } as unknown as SimulationRepository;
 
 const archRepo = { findById: vi.fn() } as unknown as ArchitectureRepository;
 
 const projectRepo = { findById: vi.fn() } as unknown as ProjectRepository;
 
-const orchestrator = {
-  create: vi.fn(),
-  run: vi.fn(),
+const execution = {
+  start: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
   cancel: vi.fn(),
-  getMetrics: vi.fn(),
-} as unknown as SimulationOrchestrator;
+} as unknown as SimulationExecutionManager;
 
-const service = new SimulationService(
-  repo,
-  archRepo,
-  projectRepo,
-  orchestrator,
-);
+const service = new SimulationService(repo, archRepo, projectRepo, execution);
 
 /** Stubs the architecture + project lookups for an owned simulation. */
 function stubsOwned() {
@@ -143,10 +117,9 @@ beforeEach(() => {
 });
 
 describe("SimulationService.create", () => {
-  it("validates the source node, persists the run, and registers it", async () => {
+  it("validates the source node and persists the run with its source node", async () => {
     stubsOwned();
     vi.mocked(repo.create).mockResolvedValue(row);
-    vi.mocked(orchestrator.create).mockReturnValue(completedSnapshot);
 
     const result = await service.create(ownerId, dto);
 
@@ -157,16 +130,9 @@ describe("SimulationService.create", () => {
       status: "created",
       seed: 0,
       currentTimeMs: 0,
+      sourceNodeId: "client-1",
       config,
       snapshot: graph,
-    });
-    expect(orchestrator.create).toHaveBeenCalledWith({
-      id: simId,
-      architectureId,
-      architectureSnapshot: graph,
-      config,
-      sourceNodeId: "client-1",
-      seed: 0,
     });
     expect(result).toEqual({
       id: simId,
@@ -174,10 +140,12 @@ describe("SimulationService.create", () => {
       status: "created",
       seed: 0,
       currentTimeMs: 0,
+      sourceNodeId: "client-1",
       config,
       snapshot: graph,
       startedAt: null,
       completedAt: null,
+      error: null,
       createdAt: row.createdAt,
     });
   });
@@ -185,7 +153,6 @@ describe("SimulationService.create", () => {
   it("derives the persisted seed from config.randomSeed", async () => {
     stubsOwned();
     vi.mocked(repo.create).mockResolvedValue(row);
-    vi.mocked(orchestrator.create).mockReturnValue(completedSnapshot);
 
     await service.create(ownerId, {
       ...dto,
@@ -193,9 +160,6 @@ describe("SimulationService.create", () => {
     });
 
     expect(repo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ seed: 42 }),
-    );
-    expect(orchestrator.create).toHaveBeenCalledWith(
       expect.objectContaining({ seed: 42 }),
     );
   });
@@ -213,7 +177,6 @@ describe("SimulationService.create", () => {
       code: "BAD_REQUEST",
     });
     expect(repo.create).not.toHaveBeenCalled();
-    expect(orchestrator.create).not.toHaveBeenCalled();
   });
 
   it("rejects creating a run under a project owned by someone else with a 403", async () => {
@@ -251,10 +214,12 @@ describe("SimulationService.findById", () => {
       status: "created",
       seed: 0,
       currentTimeMs: 0,
+      sourceNodeId: "client-1",
       config,
       snapshot: graph,
       startedAt: null,
       completedAt: null,
+      error: null,
       createdAt: row.createdAt,
     });
     expect("result" in result).toBe(false);
@@ -303,11 +268,12 @@ describe("SimulationService.findById", () => {
 
 describe("SimulationService.getStatus", () => {
   it("returns the status view for an authorized reader", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00Z");
     vi.mocked(repo.findById).mockResolvedValue({
       ...row,
       status: "running",
       currentTimeMs: 250,
-      startedAt: completedSnapshot.startedAt,
+      startedAt,
     });
     stubsOwned();
 
@@ -317,8 +283,25 @@ describe("SimulationService.getStatus", () => {
       id: simId,
       status: "running",
       currentTimeMs: 250,
-      startedAt: completedSnapshot.startedAt,
+      startedAt,
       completedAt: null,
+      error: null,
+    });
+  });
+
+  it("surfaces a failure reason for a failed run", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      status: "failed",
+      error: "engine exploded",
+    });
+    stubsOwned();
+
+    const result = await service.getStatus(simId, ownerId);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      error: "engine exploded",
     });
   });
 
@@ -334,10 +317,11 @@ describe("SimulationService.getStatus", () => {
 
 describe("SimulationService.getResults", () => {
   it("returns the details and persisted metrics for an authorized reader", async () => {
+    const metrics = { simulationId: simId };
     vi.mocked(repo.findById).mockResolvedValue({
       ...row,
       status: "completed",
-      result: metrics,
+      result: metrics as never,
     });
     stubsOwned();
 
@@ -357,7 +341,10 @@ describe("SimulationService.getResults", () => {
   });
 
   it("enforces visibility before returning results", async () => {
-    vi.mocked(repo.findById).mockResolvedValue({ ...row, result: metrics });
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      result: {} as never,
+    });
     stubsOwned();
 
     await expect(service.getResults(simId, otherUserId)).rejects.toMatchObject({
@@ -367,32 +354,23 @@ describe("SimulationService.getResults", () => {
 });
 
 describe("SimulationService.start", () => {
-  it("runs to completion and persists the final state and report", async () => {
+  it("delegates to the execution manager and returns the running details", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00Z");
     vi.mocked(repo.findById).mockResolvedValue(row);
     stubsOwned();
-    vi.mocked(orchestrator.run).mockReturnValue(report);
-    vi.mocked(repo.updateLifecycle).mockResolvedValue({
+    vi.mocked(execution.start).mockResolvedValue({
       ...row,
-      status: "completed",
-      currentTimeMs: 1000,
-      result: metrics,
+      status: "running",
+      startedAt,
     });
 
     const result = await service.start(simId, ownerId);
 
-    expect(orchestrator.run).toHaveBeenCalledWith(simId);
-    expect(repo.updateLifecycle).toHaveBeenCalledWith(simId, {
-      status: "completed",
-      currentTimeMs: 1000,
-      startedAt: completedSnapshot.startedAt,
-      completedAt: completedSnapshot.completedAt,
-      result: metrics,
-    });
-    expect(result.metrics).toBe(metrics);
-    expect(result.simulation.status).toBe("completed");
+    expect(execution.start).toHaveBeenCalledWith(simId);
+    expect(result).toMatchObject({ id: simId, status: "running", startedAt });
   });
 
-  it("rejects a non-owner with a 403 and does not run the simulation", async () => {
+  it("rejects a non-owner with a 403 and does not start the simulation", async () => {
     vi.mocked(repo.findById).mockResolvedValue(row);
     stubsOwned();
 
@@ -400,7 +378,7 @@ describe("SimulationService.start", () => {
       statusCode: 403,
       code: "FORBIDDEN",
     });
-    expect(orchestrator.run).not.toHaveBeenCalled();
+    expect(execution.start).not.toHaveBeenCalled();
   });
 
   it("rejects starting a run that is already terminal with a 409", async () => {
@@ -414,105 +392,61 @@ describe("SimulationService.start", () => {
       statusCode: 409,
       code: "CONFLICT",
     });
-    expect(orchestrator.run).not.toHaveBeenCalled();
+    expect(execution.start).not.toHaveBeenCalled();
   });
 
-  it("persists a failed run with the metrics collected so far, then rethrows", async () => {
+  it("maps a lost claim race to a 409", async () => {
     vi.mocked(repo.findById).mockResolvedValue(row);
     stubsOwned();
-    vi.mocked(orchestrator.run).mockImplementation(() => {
-      throw new Error("engine exploded");
-    });
-    vi.mocked(orchestrator.getMetrics).mockReturnValue(metrics);
-    vi.mocked(repo.updateLifecycle).mockResolvedValue({
-      ...row,
-      status: "failed",
-    });
-
-    await expect(service.start(simId, ownerId)).rejects.toThrow(
-      "engine exploded",
-    );
-    expect(repo.updateLifecycle).toHaveBeenCalledWith(
-      simId,
-      expect.objectContaining({ status: "failed", result: metrics }),
-    );
-  });
-
-  it("maps a missing runtime to a 409 without mutating the row", async () => {
-    vi.mocked(repo.findById).mockResolvedValue(row);
-    stubsOwned();
-    vi.mocked(orchestrator.run).mockImplementation(() => {
-      throw new Error(`Simulation not found: ${simId}`);
-    });
+    vi.mocked(execution.start).mockResolvedValue(null);
 
     await expect(service.start(simId, ownerId)).rejects.toMatchObject({
       statusCode: 409,
       code: "CONFLICT",
     });
-    expect(repo.updateLifecycle).not.toHaveBeenCalled();
   });
 });
 
 describe("SimulationService control actions", () => {
-  const pausedSnapshot: SimulationSnapshot = {
-    ...completedSnapshot,
-    status: "paused",
-    completedAt: undefined,
-  };
-
-  it("pauses a running simulation and persists the new state", async () => {
+  it("pauses a running simulation via the execution manager", async () => {
     vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "running" });
     stubsOwned();
-    vi.mocked(orchestrator.pause).mockReturnValue(pausedSnapshot);
-    vi.mocked(repo.updateLifecycle).mockResolvedValue({
+    vi.mocked(execution.pause).mockResolvedValue({
       ...row,
       status: "paused",
     });
 
     const result = await service.pause(simId, ownerId);
 
-    expect(orchestrator.pause).toHaveBeenCalledWith(simId);
-    expect(repo.updateLifecycle).toHaveBeenCalledWith(simId, {
-      status: "paused",
-      currentTimeMs: 1000,
-      completedAt: undefined,
-    });
+    expect(execution.pause).toHaveBeenCalledWith(simId);
     expect(result.status).toBe("paused");
   });
 
-  it("resumes a paused simulation", async () => {
+  it("resumes a paused simulation via the execution manager", async () => {
     vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "paused" });
     stubsOwned();
-    vi.mocked(orchestrator.resume).mockReturnValue({
-      ...completedSnapshot,
-      status: "running",
-    });
-    vi.mocked(repo.updateLifecycle).mockResolvedValue({
+    vi.mocked(execution.resume).mockResolvedValue({
       ...row,
       status: "running",
     });
 
     const result = await service.resume(simId, ownerId);
 
-    expect(orchestrator.resume).toHaveBeenCalledWith(simId);
+    expect(execution.resume).toHaveBeenCalledWith(simId);
     expect(result.status).toBe("running");
   });
 
-  it("cancels a created simulation", async () => {
+  it("cancels a created simulation via the execution manager", async () => {
     vi.mocked(repo.findById).mockResolvedValue(row);
     stubsOwned();
-    vi.mocked(orchestrator.cancel).mockReturnValue({
-      ...completedSnapshot,
-      status: "cancelled",
-    });
-    vi.mocked(repo.updateLifecycle).mockResolvedValue({
+    vi.mocked(execution.cancel).mockResolvedValue({
       ...row,
       status: "cancelled",
     });
 
     const result = await service.cancel(simId, ownerId);
 
-    expect(orchestrator.cancel).toHaveBeenCalledWith(simId);
+    expect(execution.cancel).toHaveBeenCalledWith(simId);
     expect(result.status).toBe("cancelled");
   });
 
@@ -524,8 +458,7 @@ describe("SimulationService control actions", () => {
       statusCode: 409,
       code: "CONFLICT",
     });
-    expect(orchestrator.pause).not.toHaveBeenCalled();
-    expect(repo.updateLifecycle).not.toHaveBeenCalled();
+    expect(execution.pause).not.toHaveBeenCalled();
   });
 
   it("rejects resuming a created simulation with a 409", async () => {
@@ -535,7 +468,7 @@ describe("SimulationService control actions", () => {
     await expect(service.resume(simId, ownerId)).rejects.toMatchObject({
       statusCode: 409,
     });
-    expect(orchestrator.resume).not.toHaveBeenCalled();
+    expect(execution.resume).not.toHaveBeenCalled();
   });
 
   it("rejects cancelling a completed simulation with a 409", async () => {
@@ -548,7 +481,7 @@ describe("SimulationService control actions", () => {
     await expect(service.cancel(simId, ownerId)).rejects.toMatchObject({
       statusCode: 409,
     });
-    expect(orchestrator.cancel).not.toHaveBeenCalled();
+    expect(execution.cancel).not.toHaveBeenCalled();
   });
 
   it("rejects control actions from a non-owner with a 403", async () => {
@@ -558,19 +491,16 @@ describe("SimulationService control actions", () => {
     await expect(service.pause(simId, otherUserId)).rejects.toMatchObject({
       statusCode: 403,
     });
-    expect(orchestrator.pause).not.toHaveBeenCalled();
+    expect(execution.pause).not.toHaveBeenCalled();
   });
 
-  it("maps a missing runtime to a 409 without mutating the row", async () => {
+  it("maps a lost control race to a 409", async () => {
     vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "running" });
     stubsOwned();
-    vi.mocked(orchestrator.pause).mockImplementation(() => {
-      throw new Error(`Simulation not found: ${simId}`);
-    });
+    vi.mocked(execution.pause).mockResolvedValue(null);
 
     await expect(service.pause(simId, ownerId)).rejects.toMatchObject({
       statusCode: 409,
     });
-    expect(repo.updateLifecycle).not.toHaveBeenCalled();
   });
 });

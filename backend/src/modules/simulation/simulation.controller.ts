@@ -90,14 +90,21 @@ export const getSimulationResults = asyncHandler(
   },
 );
 
-/** POST /api/v1/simulations/:id/start — starts and runs a simulation to completion. */
+/**
+ * POST /api/v1/simulations/:id/start — claims a simulation and schedules it to
+ * run in the background, responding 202. Clients poll `/status` and `/results`.
+ */
 export const startSimulation = asyncHandler(
   async (req: Request, res: Response) => {
     const user = requireUser(req);
 
-    const result = await simulationService.start(requireId(req), user.id);
+    const simulation = await simulationService.start(requireId(req), user.id);
 
-    return ApiResponse.ok(res, result, "Simulation started successfully");
+    return ApiResponse.accepted(
+      res,
+      simulation,
+      "Simulation started successfully",
+    );
   },
 );
 

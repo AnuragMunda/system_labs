@@ -52,6 +52,20 @@ class ApiResponse {
   ) {
     return this.success(res, HttpStatus.CREATED, data, message);
   }
+
+  /**
+   * Send an accepted response (202) for work scheduled to complete later.
+   * @param {Response} res - Express response object
+   * @param {*} data - Response data
+   * @param {String} message - Response message
+   */
+  static accepted(
+    res: Response,
+    data: null | unknown = null,
+    message: string = ApiMessages.SUCCESS.OK,
+  ) {
+    return this.success(res, HttpStatus.ACCEPTED, data, message);
+  }
 }
 
 export { ApiResponse };

@@ -27,6 +27,7 @@ export interface CreateSimulationRecord {
   status: SimulationStatus;
   seed: number | null;
   currentTimeMs: number;
+  sourceNodeId: string;
   config: SimulationConfig;
   snapshot: ArchitectureGraph;
 }
@@ -39,9 +40,10 @@ export interface CreateSimulationRecord {
 export interface UpdateSimulationRecord {
   status?: SimulationStatus;
   currentTimeMs?: number;
-  startedAt?: Date;
-  completedAt?: Date;
+  startedAt?: Date | null;
+  completedAt?: Date | null;
   result?: SimulationMetrics | null;
+  error?: string | null;
 }
 
 /** A simulation's full metadata and lifecycle state, excluding its report. */
@@ -51,10 +53,12 @@ export interface SimulationDetails {
   status: SimulationStatus;
   seed: number | null;
   currentTimeMs: number;
+  sourceNodeId: string | null;
   config: SimulationConfig | null;
   snapshot: ArchitectureGraph | null;
   startedAt: Date | null;
   completedAt: Date | null;
+  error: string | null;
   createdAt: Date;
 }
 
@@ -65,6 +69,7 @@ export interface SimulationStatusView {
   currentTimeMs: number;
   startedAt: Date | null;
   completedAt: Date | null;
+  error: string | null;
 }
 
 /** A simulation's details together with its persisted aggregate report. */

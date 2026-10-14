@@ -21,10 +21,7 @@ Repositories ──────────► Database
 Simulation API
    │
    ▼
-Simulation Queue
-   │
-   ▼
-Simulation Worker
+Simulation Execution Manager (in-process, background)
    │
    ▼
 Simulation Session (prepares load/failures/autoscaling)
@@ -34,8 +31,11 @@ Simulation Engine
 ```
 
 The `Simulation Queue`/`Simulation Worker` steps are the target design but are
-not built yet: today the Simulation API drives the session/engine synchronously
-in-process (`SimulationService` → `SimulationOrchestrator`).
+not built yet: today the Simulation API claims a run and hands it to the
+in-process `SimulationExecutionManager`, which drives the session/engine in the
+background (`SimulationService` → `SimulationExecutionManager` →
+`SimulationOrchestrator`). Execution is decoupled from the HTTP request/response
+lifetime but still runs inside the API process.
 
 Modules should communicate through explicit service/domain interfaces rather than reaching into another module's internals.
 
@@ -153,6 +153,7 @@ Modules should communicate through explicit service/domain interfaces rather tha
 **Interfaces**
 
 - `SimulationOrchestrator` (implemented)
+- `SimulationExecutionManager` (implemented)
 - `SimulationService` (implemented)
 - `SimulationRepository` (implemented)
 - Simulation HTTP API (`simulation.controller.ts` / `simulation.routes.ts`) (implemented)
@@ -184,29 +185,61 @@ The orchestrator:
   that never alias live runtime state.
 
 Execution is synchronous and in-process: the engine drives a virtual clock and
-never sleeps, so a full run is a bounded loop. A background worker/queue can
-wrap this service later without changing its contract.
+never sleeps, so a full run is a bounded loop. `SimulationExecutionManager`
+wraps this in a background loop (yielding to the event loop between chunks) and
+can be replaced by a queue/worker later without changing the orchestrator's
+contract.
+
+**Implemented — `SimulationExecutionManager`**
+`SimulationExecutionManager` owns a run's lifecycle _after_ it is claimed from
+the database. It reconstructs the run from the persisted `snapshot`/`config`/
+`source_node_id` (in-memory engine state is never persisted), drives the
+orchestrator in the background, and writes lifecycle transitions back
+atomically. Key properties:
+
+- **Atomic claims.** `start` writes `created → running` with a status-scoped
+  `UPDATE ... WHERE status IN (...) RETURNING`; a lost race returns no row and is
+  surfaced as a 409. The same guard applies to pause/resume/cancel.
+- **Detached from HTTP.** After a successful claim the HTTP request returns 202;
+  the run proceeds in-process and clients observe it through `/status` and
+  `/results`.
+- **Cooperative control.** Pause/resume/cancel persist the new status and, when
+  a handle exists in this process, steer the in-flight loop; the loop stops
+  without overwriting a status another operation already set.
+- **Failure capture.** An engine error (or an incomplete reconstruction) is
+  persisted as `failed` with the error message; the runtime is always disposed.
+- **Graceful shutdown.** `shutdown()` interrupts in-flight runs (persisting them
+  as `failed`) and awaits the background loops.
+
+**Implemented — startup recovery**
+Because in-memory runtime state is never restored, `recoverInterruptedSimulations`
+(`jobs/simulation-recovery.ts`) runs at boot and reconciles any run left
+`running`/`paused` by a previous process to `failed` with an explanatory reason,
+so observers of `/status`/`/results` get a definitive answer instead of a stuck
+run. This assumes a single API instance; leases/heartbeats for multi-process
+ownership are deferred to the worker/queue step.
 
 **Implemented — Simulation HTTP API**
-`SimulationService` composes the orchestrator with `SimulationRepository` and the
-architecture/project repositories. It validates the requested `sourceNodeId`
-against the captured snapshot (`simulationConfigSchema` is the config's Zod
-boundary), enforces the same rules as architectures (create/controls require
-owning the parent project; reads inherit the project's visibility), and reuses
-the engine's lifecycle matrix (`allowedFromStatuses`) to reject illegal control
-actions with a 409 instead of duplicating transition rules.
+`SimulationService` composes the execution manager with `SimulationRepository`
+and the architecture/project repositories. It validates the requested
+`sourceNodeId` against the captured snapshot (`simulationConfigSchema` is the
+config's Zod boundary), enforces the same rules as architectures (create/controls
+require owning the parent project; reads inherit the project's visibility), and
+reuses the engine's lifecycle matrix (`allowedFromStatuses`) to reject illegal
+control actions with a 409 instead of duplicating transition rules.
 
-Because there is no queue/worker yet, `POST /:id/start` runs the simulation to
-completion synchronously and persists the final status plus the aggregate
-`SimulationMetrics` into `simulations.result`; the engine's exceptions are
-mapped to 4xx/5xx and a failed run is persisted as `failed`. Endpoints: create,
+`POST /:id/start` claims the run and responds **202 Accepted**; execution
+completes in the background and persists the final status plus the aggregate
+`SimulationMetrics` into `simulations.result`. Engine failures after the 202 are
+surfaced through `/status` and `/results`, not as an HTTP 5xx. Endpoints: create,
 details, status, results, start, pause, resume, cancel (mounted at
 `/api/v1/simulations`).
 
 **Deferred**
 The BullMQ `SimulationQueue` and the worker process entry point (execution is
-currently in-process). Simulation event/metric _sample_ persistence
-(`simulation_events`, `metrics`) is also still deferred; only the final aggregate
+currently in-process). Multi-process ownership of runs (leases/heartbeats) is
+also deferred. Simulation event/metric _sample_ persistence
+(`simulation_events`, `metrics`) is still deferred; only the final aggregate
 report is stored.
 
 **Important**
@@ -604,17 +637,19 @@ Unique on `(project_id, name)`.
 
 **simulations** (`schema/simulations.ts`) — a run against an architecture plus its events and metrics.
 
-| Column                                 | Type      | Notes                                                                        |
-| -------------------------------------- | --------- | ---------------------------------------------------------------------------- |
-| id                                     | uuid      | PK, default random                                                           |
-| architecture_id                        | uuid      | FK → architectures, on delete cascade, indexed                               |
-| status                                 | enum      | created / running / paused / completed / failed / cancelled, default created |
-| seed                                   | integer   | nullable; seed for the deterministic PRNG                                    |
-| current_time_ms                        | integer   | default 0; engine progress cursor                                            |
-| config                                 | jsonb     | `SimulationConfig`, nullable                                                 |
-| snapshot                               | jsonb     | `ArchitectureGraph` snapshot, nullable                                       |
-| result                                 | jsonb     | `SimulationMetrics` aggregate report, nullable until the run finishes        |
-| started_at / completed_at / created_at | timestamp | lifecycle + creation                                                         |
+| Column                                 | Type      | Notes                                                                         |
+| -------------------------------------- | --------- | ----------------------------------------------------------------------------- |
+| id                                     | uuid      | PK, default random                                                            |
+| architecture_id                        | uuid      | FK → architectures, on delete cascade, indexed                                |
+| status                                 | enum      | created / running / paused / completed / failed / cancelled, default created  |
+| seed                                   | integer   | nullable; seed for the deterministic PRNG                                     |
+| current_time_ms                        | integer   | default 0; engine progress cursor                                             |
+| source_node_id                         | varchar   | nullable; traffic origin, persisted so a run can be reconstructed             |
+| config                                 | jsonb     | `SimulationConfig`, nullable                                                  |
+| snapshot                               | jsonb     | `ArchitectureGraph` snapshot, nullable                                        |
+| result                                 | jsonb     | `SimulationMetrics` aggregate report, nullable until the run finishes         |
+| error                                  | text      | nullable; reason a run ended `failed` (engine error or interrupted execution) |
+| started_at / completed_at / created_at | timestamp | lifecycle + creation                                                          |
 
 **simulation_events** (`schema/simulations.ts`) — events emitted during a run, indexed by simulation + timestamp.
 

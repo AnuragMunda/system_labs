@@ -2,9 +2,10 @@
  * @file simulation.api.test.ts
  *
  * @description Integration tests for the simulation HTTP endpoints, exercised
- * through supertest against the real app, database, and orchestrator: creation
- * and ownership rules, synchronous run-to-completion, persisted results,
- * lifecycle conflicts, and reads that inherit the parent project's visibility.
+ * through supertest against the real app, database, and execution manager:
+ * creation and ownership rules, asynchronous start (202 + polling to a terminal
+ * status), persisted results, lifecycle conflicts, and reads that inherit the
+ * parent project's visibility.
  */
 
 import request from "supertest";
@@ -109,6 +110,42 @@ async function ownedSimulation(overrides: object = {}) {
   ).expect(201);
 
   return { project, architectureId, simulation: created.body.data };
+}
+
+/**
+ * Polls a simulation's status endpoint until it reaches a terminal state, since
+ * start now schedules execution in the background and returns 202. Fails the
+ * test if the run does not settle before the timeout.
+ */
+async function waitForTerminal(
+  simulationId: string,
+  timeoutMs = 10_000,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const res = await request(app)
+      .get(`/api/v1/simulations/${simulationId}/status`)
+      .set(...authHeader());
+
+    const status = res.body.data?.status as string | undefined;
+
+    if (
+      status === "completed" ||
+      status === "failed" ||
+      status === "cancelled"
+    ) {
+      return res.body.data;
+    }
+
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Timed out waiting for simulation ${simulationId} (last status: ${status}).`,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 describeDb("Simulations API", () => {
@@ -242,19 +279,19 @@ describeDb("Simulations API", () => {
   });
 
   describe("POST /api/v1/simulations/:id/start", () => {
-    it("runs to completion, persists the report, and responds with metrics", async () => {
+    it("accepts the run with 202, then completes in the background", async () => {
       const { simulation } = await ownedSimulation();
 
       const res = await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader());
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(202);
       expect(res.body.message).toBe("Simulation started successfully");
-      expect(res.body.data.simulation.status).toBe("completed");
-      expect(res.body.data.metrics).toMatchObject({
-        simulationId: simulation.id,
-      });
+      expect(res.body.data.status).toBe("running");
+
+      const status = await waitForTerminal(simulation.id);
+      expect(status.status).toBe("completed");
 
       const found = await repo.findById(simulation.id);
       expect(found.status).toBe("completed");
@@ -269,7 +306,9 @@ describeDb("Simulations API", () => {
       await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader())
-        .expect(200);
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
 
       const res = await request(app)
         .get(`/api/v1/simulations/${simulation.id}/results`)
@@ -288,7 +327,7 @@ describeDb("Simulations API", () => {
       await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader())
-        .expect(200);
+        .expect(202);
 
       const res = await request(app)
         .get(`/api/v1/simulations/${simulation.id}/status`)
@@ -297,9 +336,12 @@ describeDb("Simulations API", () => {
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({
         id: simulation.id,
-        status: "completed",
       });
-      expect(res.body.data.completedAt).toBeDefined();
+      expect(["running", "completed"]).toContain(res.body.data.status);
+
+      const terminal = await waitForTerminal(simulation.id);
+      expect(terminal.status).toBe("completed");
+      expect(terminal.completedAt).toBeDefined();
     });
 
     it("returns 409 when starting a simulation that already completed", async () => {
@@ -308,7 +350,9 @@ describeDb("Simulations API", () => {
       await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader())
-        .expect(200);
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
 
       const res = await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
@@ -403,7 +447,9 @@ describeDb("Simulations API", () => {
       await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader())
-        .expect(200);
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
 
       const res = await request(app)
         .post(`/api/v1/simulations/${simulation.id}/cancel`)
@@ -508,7 +554,9 @@ describeDb("Simulations API", () => {
       await request(app)
         .post(`/api/v1/simulations/${simulation.id}/start`)
         .set(...authHeader())
-        .expect(200);
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
 
       const res = await request(app)
         .get(`/api/v1/simulations/${simulation.id}/results`)

@@ -178,6 +178,15 @@ export class SimulationOrchestrator {
     return { simulation: this.getSnapshot(id), metrics: this.getMetrics(id) };
   }
 
+  /**
+   * Releases a run's in-memory runtime state. Called once a run reaches a
+   * terminal state so completed simulations do not accumulate for the lifetime
+   * of the process. A disposed id can be recreated from its snapshot/config.
+   */
+  dispose(id: string): void {
+    this.runs.delete(id);
+  }
+
   /** Wires the isolated runtime stack for a single simulation. */
   private buildRun(
     simulation: Simulation,

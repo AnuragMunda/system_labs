@@ -5,15 +5,15 @@
  * target architecture and its parent project, enforces the same ownership and
  * visibility rules architectures use (writes require owning the project; reads
  * inherit the project's visibility), validates the requested traffic source
- * against the captured snapshot, and drives the orchestration layer. Controllers
- * never touch the orchestrator or the database directly.
+ * against the captured snapshot, and drives execution management. Controllers
+ * never touch the execution manager or the database directly.
  *
- * Simluations execute synchronously and in-process (there is no queue/worker
- * yet), so `start` runs to completion and persists the aggregate report.
+ * Execution is asynchronous and detached from the HTTP request: `start` atomically
+ * claims a run and returns immediately, while `SimulationExecutionManager` drives
+ * it in the background and persists its lifecycle.
  */
 
 import type { Project } from "@/domain/project/project.types.js";
-import type { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
 import type { SimulationStatus } from "@/domain/simulation/simulation.types.js";
 import {
   BadRequestError,
@@ -34,23 +34,19 @@ import {
   SimulationResultView,
   SimulationStatusView,
 } from "./simulation.dto.js";
-import { SimulationOrchestrator } from "./simulation.orchestrator.js";
-import type {
-  SimulationReport,
-  SimulationSnapshot,
-} from "./simulation.orchestrator.types.js";
+import { SimulationExecutionManager } from "./simulation.execution.js";
 import {
   SimulationRepository,
   SimulationRow,
 } from "./simulation.repository.js";
 
-/** Coordinates simulation domain operations with persistence and orchestration. */
+/** Coordinates simulation domain operations with persistence and execution. */
 export class SimulationService {
   constructor(
     private readonly repository: SimulationRepository,
     private readonly architectureRepository: ArchitectureRepository,
     private readonly projectRepository: ProjectRepository,
-    private readonly orchestrator: SimulationOrchestrator,
+    private readonly execution: SimulationExecutionManager,
   ) {}
 
   /**
@@ -86,17 +82,9 @@ export class SimulationService {
       status: "created",
       seed,
       currentTimeMs: 0,
+      sourceNodeId: data.sourceNodeId,
       config: data.config,
       snapshot,
-    });
-
-    this.orchestrator.create({
-      id: simulation.id,
-      architectureId: architecture.id,
-      architectureSnapshot: snapshot,
-      config: data.config,
-      sourceNodeId: data.sourceNodeId,
-      seed,
     });
 
     return this.toDetails(simulation);
@@ -123,6 +111,7 @@ export class SimulationService {
       currentTimeMs: simulation.currentTimeMs,
       startedAt: simulation.startedAt,
       completedAt: simulation.completedAt,
+      error: simulation.error,
     };
   }
 
@@ -146,28 +135,20 @@ export class SimulationService {
   }
 
   /**
-   * Starts a created simulation and runs it to completion synchronously,
-   * persisting the final lifecycle state and aggregate report. A run that fails
-   * mid-execution is persisted as `failed` (with whatever metrics were
-   * collected) before the error is surfaced.
+   * Claims a created simulation and schedules it to run in the background,
+   * returning the now-`running` details. A run that fails mid-execution is
+   * persisted as `failed` by the execution manager and surfaced through the
+   * status/results endpoints.
    */
-  async start(id: string, userId: string): Promise<SimulationResultView> {
+  async start(id: string, userId: string): Promise<SimulationDetails> {
     const simulation = await this.repository.findById(id);
 
     await this.assertOwnerForSimulation(simulation, userId);
     this.assertTransition(simulation.status, "start");
 
-    const report = await this.runToCompletion(id);
+    const claimed = await this.execution.start(id);
 
-    const updated = await this.repository.updateLifecycle(id, {
-      status: report.simulation.status,
-      currentTimeMs: report.simulation.currentTimeMs,
-      startedAt: report.simulation.startedAt,
-      completedAt: report.simulation.completedAt ?? new Date(),
-      result: report.metrics,
-    });
-
-    return { simulation: this.toDetails(updated), metrics: report.metrics };
+    return this.toDetails(this.assertApplied(claimed, "start"));
   }
 
   /** Pauses a running simulation the caller owns. */
@@ -187,8 +168,8 @@ export class SimulationService {
 
   /**
    * Applies a lifecycle control action after verifying ownership and that the
-   * action is legal from the simulation's current status, then persists the
-   * resulting state.
+   * action is legal from the simulation's current status, then delegates the
+   * atomic transition to the execution manager.
    */
   private async control(
     id: string,
@@ -200,68 +181,24 @@ export class SimulationService {
     await this.assertOwnerForSimulation(simulation, userId);
     this.assertTransition(simulation.status, action);
 
-    const snapshot = this.invokeOrchestrator(action, id);
+    const updated = await this.execution[action](id);
 
-    const updated = await this.repository.updateLifecycle(id, {
-      status: snapshot.status,
-      currentTimeMs: snapshot.currentTimeMs,
-      completedAt: snapshot.completedAt,
-    });
-
-    return this.toDetails(updated);
+    return this.toDetails(this.assertApplied(updated, action));
   }
 
   /**
-   * Runs a simulation to completion. A missing runtime is surfaced as a 409
-   * without mutating the row; a genuine engine failure is persisted as `failed`
-   * (with the metrics collected so far) and then rethrown.
+   * Throws ConflictError when a status-scoped transition did not apply, which
+   * means another operation changed the run's status first.
    */
-  private async runToCompletion(id: string): Promise<SimulationReport> {
-    try {
-      return this.orchestrator.run(id);
-    } catch (error) {
-      const runtimeError = this.mapRuntimeError(error);
-
-      if (runtimeError !== error) {
-        throw runtimeError;
-      }
-
-      await this.repository.updateLifecycle(id, {
-        status: "failed",
-        completedAt: new Date(),
-        result: this.safeMetrics(id),
-      });
-
-      throw error;
+  private assertApplied(
+    row: SimulationRow | null,
+    action: LifecycleAction,
+  ): SimulationRow {
+    if (!row) {
+      throw ConflictError(`Simulation could not ${action}.`);
     }
-  }
 
-  /** Wraps an orchestrator control call, mapping runtime-missing errors to 409. */
-  private invokeOrchestrator(
-    action: "pause" | "resume" | "cancel",
-    id: string,
-  ): SimulationSnapshot {
-    try {
-      switch (action) {
-        case "pause":
-          return this.orchestrator.pause(id);
-        case "resume":
-          return this.orchestrator.resume(id);
-        case "cancel":
-          return this.orchestrator.cancel(id);
-      }
-    } catch (error) {
-      throw this.mapRuntimeError(error);
-    }
-  }
-
-  /** Reads metrics defensively; returns undefined when the run is unavailable. */
-  private safeMetrics(id: string): SimulationMetrics | undefined {
-    try {
-      return this.orchestrator.getMetrics(id);
-    } catch {
-      return undefined;
-    }
+    return row;
   }
 
   /** Throws ForbiddenError unless the user owns the given project. */
@@ -315,22 +252,6 @@ export class SimulationService {
     }
   }
 
-  /**
-   * Maps an orchestrator "not found" (a run that isn't registered in this
-   * process, e.g. after a restart) to a 409, since the persisted row and the
-   * live runtime disagree at that point.
-   */
-  private mapRuntimeError(error: unknown): unknown {
-    if (
-      error instanceof Error &&
-      error.message.startsWith("Simulation not found:")
-    ) {
-      return ConflictError("Simulation runtime is not available.");
-    }
-
-    return error;
-  }
-
   /** Strips the persisted report from a row before returning it as a DTO. */
   private toDetails(row: SimulationRow): SimulationDetails {
     return {
@@ -339,10 +260,12 @@ export class SimulationService {
       status: row.status,
       seed: row.seed,
       currentTimeMs: row.currentTimeMs,
+      sourceNodeId: row.sourceNodeId,
       config: row.config,
       snapshot: row.snapshot,
       startedAt: row.startedAt,
       completedAt: row.completedAt,
+      error: row.error,
       createdAt: row.createdAt,
     };
   }

@@ -249,23 +249,23 @@ describe("getSimulationResults", () => {
 });
 
 describe("startSimulation", () => {
-  it("starts the simulation for the caller and responds with 200", async () => {
+  it("starts the simulation for the caller and responds with 202", async () => {
     const req = mockAuthReq({ params: { id: uuid } });
     const res = mockRes();
     const next = mockNext();
 
-    const result = { simulation: { id: uuid }, metrics: {} };
-    vi.mocked(simulationService.start).mockResolvedValue(result as never);
+    const simulation = { id: uuid, status: "running" };
+    vi.mocked(simulationService.start).mockResolvedValue(simulation as never);
 
     await startSimulation(req, res, next);
     await flush();
 
     expect(simulationService.start).toHaveBeenCalledWith(uuid, uuid);
-    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.status).toHaveBeenCalledWith(202);
     expect(res.json).toHaveBeenCalledWith({
       success: true,
       message: "Simulation started successfully",
-      data: result,
+      data: simulation,
     });
   });
 
