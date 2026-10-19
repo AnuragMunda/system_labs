@@ -15,7 +15,6 @@ export function ComponentNode({ data, selected }: NodeProps<EditorNode>) {
   const rps = live ? live.rps : Math.round(data.traffic);
   const p95 = live ? live.p95 : data.latencyMs;
   const cpu = live ? live.cpu : Math.round(data.cpu);
-
   return (
     <div
       className={`w-48 rounded-md border bg-card/95 shadow-[0_0_0_1px_rgba(0,0,0,0.25)] transition-colors ${
@@ -63,7 +62,9 @@ export function ComponentNode({ data, selected }: NodeProps<EditorNode>) {
         </div>
         <div className="flex flex-col gap-0.5">
           <span>cpu</span>
-          <span className="text-foreground">{cpu}%</span>
+          <span className="text-foreground">
+            {cpu === undefined ? "—" : `${cpu}%`}
+          </span>
         </div>
         <div className="col-span-3 flex items-center justify-between border-t border-border pt-1 text-[10px]">
           <span>replicas ×{data.replicas}</span>

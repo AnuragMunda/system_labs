@@ -12,8 +12,22 @@ import type {
   EditorNode,
   EditorNodeData,
   Protocol,
+  RoutingStrategy,
 } from "./types";
 import type { Health } from "@/lib/health";
+
+const ROUTING_STRATEGIES: RoutingStrategy[] = [
+  "round_robin",
+  "random",
+  "least_connections",
+];
+
+function routing(value: unknown, fallback: RoutingStrategy): RoutingStrategy {
+  return typeof value === "string" &&
+    (ROUTING_STRATEGIES as string[]).includes(value)
+    ? (value as RoutingStrategy)
+    : fallback;
+}
 
 function num(value: unknown, fallback: number): number {
   return typeof value === "number" && !Number.isNaN(value) ? value : fallback;
@@ -47,6 +61,7 @@ export function buildNodeData(kind: ComponentKind, label?: string): EditorNodeDa
     region: str(d.region, "us-east-1"),
     timeoutMs: num(d.timeoutMs, 500),
     retryPolicy: d.retryPolicy ?? { retries: 3, circuitBreaker: true },
+    routingStrategy: routing(d.routingStrategy, "round_robin"),
     traffic: num(d.traffic, 0),
     latencyMs: num(d.latencyMs, 20),
     capacity: optNum(d.capacity),
@@ -89,6 +104,7 @@ export function serializeNode(node: EditorNode): BackendArchitectureNode {
       region: d.region,
       timeoutMs: d.timeoutMs,
       retryPolicy: d.retryPolicy,
+      routingStrategy: d.routingStrategy,
       traffic: d.traffic,
       health: d.health,
     },
@@ -121,6 +137,7 @@ export function deserializeNode(n: BackendArchitectureNode): EditorNode {
       retryPolicy:
         (c.retryPolicy as EditorNodeData["retryPolicy"]) ??
         d.retryPolicy ?? { retries: 3, circuitBreaker: true },
+      routingStrategy: routing(c.routingStrategy, "round_robin"),
       traffic: num(c.traffic, num(d.traffic, 0)),
       latencyMs: num(c.latencyMs, num(d.latencyMs, 20)),
       capacity: optNum(c.capacity),

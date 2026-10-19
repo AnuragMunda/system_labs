@@ -2,22 +2,38 @@
 
 // Editor shell: lays out the toolbar, left palette, canvas (~70%), right inspector
 // and AI panel, and the bottom telemetry bar. Hosts the ReactFlowProvider so the
-// toolbar can drive zoom/fit. Runs the client simulation loop and debounced autosave.
-import { useEffect, useRef, useState } from "react";
+// toolbar can drive zoom/fit. Owns the backend simulation run (create → start →
+// poll) and the debounced autosave of the architecture graph.
+import { useCallback, useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { store } from "@/store";
 import {
-  applySimulation,
+  applySimulationMetrics,
+  clearSimulationMetrics,
   initEditor,
   markSaved,
   setSaving,
 } from "@/store/editorSlice";
+import {
+  createSimulation,
+  pauseSimulation,
+  resumeSimulation,
+  startSimulation,
+  cancelSimulation,
+} from "@/store/simulationsSlice";
+import { useSimulationRun } from "@/features/simulations/useSimulationRun";
+import {
+  metricsToNodeHealth,
+  metricsToNodeLive,
+  isActiveStatus,
+} from "@/features/simulations/mapping";
+import { SimulationConfigDialog } from "@/features/simulations/SimulationConfigDialog";
+import { listSimulationsApi, type SimulationConfig } from "@/lib/api/simulations";
 import { updateArchitectureApi } from "@/lib/api/architectures";
 import { toast } from "@/lib/utils";
 import { deserializeEdge, deserializeNode, serializeEdge, serializeNode } from "../serialize";
-import { simulateStep } from "../simEngine";
 import { TopToolbar } from "./TopToolbar";
 import { ComponentPalette } from "./ComponentPalette";
 import { Canvas } from "./Canvas";
@@ -37,12 +53,15 @@ export function EditorShell({
   const [zoom, setZoom] = useState(1);
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
-  const running = useAppSelector((s) => s.editor.simulation.running);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  const run = useSimulationRun(activeId);
   const dirty = useAppSelector((s) => s.editor.dirty);
   const name = useAppSelector((s) => s.editor.name);
-  const tickRef = useRef(0);
+  const submitting = useAppSelector((s) => s.simulations.submitting);
+  const createError = useAppSelector((s) => s.simulations.createError);
 
-  // Load the architecture into the editor once.
   useEffect(() => {
     dispatch(
       initEditor({
@@ -56,36 +75,63 @@ export function EditorShell({
     );
   }, [architecture, dispatch]);
 
-  // Client-side simulation loop: tick on an interval while running, reading the
-  // latest graph straight from the store to avoid resetting the timer on edits.
+  // Re-attach to an existing run for this architecture (e.g. after a reload).
   useEffect(() => {
-    if (!running) return;
-    tickRef.current = 0;
-    const id = window.setInterval(() => {
-      tickRef.current += 1;
-      const { nodes, edges } = store.getState().editor;
-      const res = simulateStep(nodes, edges, tickRef.current);
-      dispatch(
-        applySimulation({
-          tick: tickRef.current,
-          telemetry: res.telemetry,
-          nodeMetrics: res.nodeMetrics,
-          edgeMetrics: res.edgeMetrics,
-        }),
-      );
-    }, 700);
-    return () => window.clearInterval(id);
-  }, [running, dispatch]);
+    let cancelled = false;
+    async function load() {
+      try {
+        const page = await listSimulationsApi({
+          architectureId: architecture.id,
+          limit: 10,
+        });
+        const active = page.items.find((item) => isActiveStatus(item.status));
+        if (!cancelled && active) setActiveId(active.id);
+      } catch {
+        // Unauthenticated or none yet; the editor starts idle.
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [architecture.id]);
+
+  // Reset overlays whenever the active run changes (baseline until results).
+  useEffect(() => {
+    dispatch(clearSimulationMetrics());
+  }, [activeId, dispatch]);
+
+  // Overlay a completed run's per-node metrics and health onto the canvas.
+  useEffect(() => {
+    if (!run?.results) return;
+    dispatch(
+      applySimulationMetrics({
+        nodeMetrics: metricsToNodeLive(run.results),
+        nodeHealth: metricsToNodeHealth(run.results),
+      }),
+    );
+  }, [run?.results, dispatch]);
+
+  const flushSave = useCallback(async () => {
+    const { name: currentName, nodes, edges } = store.getState().editor;
+    dispatch(setSaving(true));
+    await updateArchitectureApi(architecture.id, {
+      name: currentName,
+      nodes: nodes.map(serializeNode),
+      edges: edges.map(serializeEdge),
+    });
+    dispatch(markSaved(new Date().toISOString()));
+  }, [architecture.id, dispatch]);
 
   // Debounced autosave whenever the graph is dirty.
   useEffect(() => {
     if (!dirty || !architecture.id) return;
     const handle = window.setTimeout(async () => {
-      const { nodes, edges } = store.getState().editor;
+      const { name: currentName, nodes, edges } = store.getState().editor;
       dispatch(setSaving(true));
       try {
         await updateArchitectureApi(architecture.id, {
-          name,
+          name: currentName,
           nodes: nodes.map(serializeNode),
           edges: edges.map(serializeEdge),
         });
@@ -98,10 +144,66 @@ export function EditorShell({
     return () => window.clearTimeout(handle);
   }, [dirty, architecture.id, name, dispatch]);
 
+  const handleStart = useCallback(() => {
+    if (run && run.status === "created") {
+      dispatch(startSimulation(run.id));
+      return;
+    }
+    setDialogOpen(true);
+  }, [run, dispatch]);
+
+  const handlePause = useCallback(() => {
+    if (activeId) dispatch(pauseSimulation(activeId));
+  }, [activeId, dispatch]);
+
+  const handleResume = useCallback(() => {
+    if (activeId) dispatch(resumeSimulation(activeId));
+  }, [activeId, dispatch]);
+
+  const handleCancel = useCallback(() => {
+    if (activeId) dispatch(cancelSimulation(activeId));
+  }, [activeId, dispatch]);
+
+  const handleRun = useCallback(
+    async (input: { sourceNodeId: string; config: SimulationConfig }) => {
+      try {
+        await flushSave();
+      } catch {
+        toast("Failed to save architecture");
+        return;
+      }
+      try {
+        const created = await dispatch(
+          createSimulation({
+            architectureId: architecture.id,
+            sourceNodeId: input.sourceNodeId,
+            config: input.config,
+          }),
+        ).unwrap();
+        dispatch(startSimulation(created.id));
+        setActiveId(created.id);
+        setDialogOpen(false);
+      } catch {
+        // createError is rendered inside the dialog by the slice.
+      }
+    },
+    [architecture.id, dispatch, flushSave],
+  );
+
   return (
     <ReactFlowProvider>
       <div className="editor-root flex h-full flex-col">
-        <TopToolbar projectName={projectName} projectId={architecture.projectId} zoom={zoom} />
+        <TopToolbar
+          projectName={projectName}
+          projectId={architecture.projectId}
+          zoom={zoom}
+          run={run}
+          submitting={submitting}
+          onStart={handleStart}
+          onPause={handlePause}
+          onResume={handleResume}
+          onCancel={handleCancel}
+        />
         <div className="flex min-h-0 flex-1">
           <ComponentPalette
             collapsed={paletteCollapsed}
@@ -116,8 +218,16 @@ export function EditorShell({
           />
           <AIPanel />
         </div>
-        <TelemetryBar />
+        <TelemetryBar run={run} />
       </div>
+
+      <SimulationConfigDialog
+        open={dialogOpen}
+        submitting={submitting}
+        error={createError}
+        onClose={() => setDialogOpen(false)}
+        onSubmit={handleRun}
+      />
     </ReactFlowProvider>
   );
 }

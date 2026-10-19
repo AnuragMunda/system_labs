@@ -53,6 +53,10 @@ export type Protocol =
   | "redis"
   | "custom";
 
+/** How a node picks among multiple outgoing connections. Mirrors the backend
+ * `routingStrategy` enum; required at run time when a node has ≥2 outgoing edges. */
+export type RoutingStrategy = "round_robin" | "random" | "least_connections";
+
 export interface AutoscalingConfig {
   enabled: boolean;
   min: number;
@@ -65,15 +69,16 @@ export interface RetryPolicy {
   circuitBreaker: boolean;
 }
 
-/** Live, simulation-only telemetry (never persisted). */
+/** Live, simulation-only telemetry (never persisted). cpu/memory are absent when
+ * the metric is not provided by the backend (the simulator does not report them). */
 export interface NodeLiveMetrics {
   rps: number;
   p50: number;
   p95: number;
   p99: number;
   errorRate: number;
-  cpu: number;
-  memory: number;
+  cpu?: number;
+  memory?: number;
 }
 
 export interface EdgeLiveMetrics {
@@ -96,6 +101,7 @@ export interface EditorNodeData extends Record<string, unknown> {
   region: string;
   timeoutMs: number;
   retryPolicy: RetryPolicy;
+  routingStrategy: RoutingStrategy;
 
   // Baseline telemetry (persisted, used pre-simulation)
   traffic: number; // requests / sec
@@ -120,13 +126,14 @@ export interface EditorEdgeData extends Record<string, unknown> {
 export type EditorNode = Node<EditorNodeData, "component">;
 export type EditorEdge = Edge<EditorEdgeData, "connection">;
 
-/** Aggregated, architecture-wide telemetry shown in the bottom bar. */
+/** Aggregated, architecture-wide telemetry shown in the bottom bar. cpu/memory
+ * are undefined when unavailable (backend runs do not report them). */
 export interface ArchitectureTelemetry {
   traffic: number; // req/s
   p95: number; // ms
   errorRate: number; // 0..1
-  cpu: number; // %
-  memory: number; // %
+  cpu?: number; // %
+  memory?: number; // %
   cost: number; // $/mo
 }
 

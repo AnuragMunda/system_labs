@@ -35,14 +35,6 @@ export interface ProjectHealthOverview {
   overallStatus: "operational" | "degraded" | "incident";
 }
 
-// Outcome of a simulation run, grouped by architecture in the feed.
-export type SimulationStatus = "passed" | "degraded" | "failed";
-export interface RecentSimulation {
-  name: string;
-  architecture: string;
-  status: SimulationStatus;
-}
-
 // A completed experiment comparing two architectures.
 export interface OverviewExperiment {
   name: string;
@@ -128,12 +120,6 @@ export const COMPARISON_DEFAULTS = {
   availability: ["99.7%", "99.99%"],
   cost: ["$620", "$910"],
 };
-
-export const RECENT_SIMULATIONS: RecentSimulation[] = [
-  { name: "Black Friday Test", architecture: "Production", status: "degraded" },
-  { name: "Regional Failure", architecture: "High Availability", status: "passed" },
-  { name: "50K RPS", architecture: "Event Driven", status: "passed" },
-];
 
 export const RECENT_EXPERIMENTS: OverviewExperiment[] = [
   { name: "Redis vs No Redis", architecturesCompared: "Production vs Cost Optimized", status: "completed" },

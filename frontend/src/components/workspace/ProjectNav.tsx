@@ -32,7 +32,10 @@ export function ProjectNav({ projectId }: { projectId: string }) {
     >
       {TABS.map((tab) => {
         const href = `${base}${tab.href}`;
-        const active = tab.href === "" ? pathname === base : pathname === href;
+        const active =
+          tab.href === ""
+            ? pathname === base
+            : pathname === href || pathname.startsWith(`${href}/`);
         return (
           <Link
             key={tab.label}

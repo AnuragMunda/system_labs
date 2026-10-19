@@ -1,7 +1,9 @@
 // Redux slice for the Architecture Editor. Holds the canvas graph (nodes/edges),
-// selection, undo/redo history, clipboard, autosave status, the (client) simulation
-// state, and the AI panel visibility. Designed to be the single source of truth that
-// React Flow renders from; the canvas dispatches change/connect handlers back here.
+// selection, undo/redo history, clipboard, autosave status, and the AI panel
+// visibility. Designed to be the single source of truth that React Flow renders
+// from; the canvas dispatches change/connect handlers back here. Simulation
+// lifecycle state lives in the simulations slice; this slice only receives the
+// resulting per-node metric overlays.
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -13,12 +15,12 @@ import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 
 import { createNode } from "../features/editor/serialize";
 import type {
-  ArchitectureTelemetry,
   ComponentKind,
   EditorEdge,
   EditorEdgeData,
   EditorNode,
   EditorNodeData,
+  NodeLiveMetrics,
   Protocol,
 } from "../features/editor/types";
 import type { Health } from "@/lib/health";
@@ -26,12 +28,6 @@ import type { Health } from "@/lib/health";
 interface HistorySnapshot {
   nodes: EditorNode[];
   edges: EditorEdge[];
-}
-
-interface SimulationState {
-  running: boolean;
-  tick: number;
-  telemetry: ArchitectureTelemetry;
 }
 
 interface EditorState {
@@ -49,18 +45,8 @@ interface EditorState {
   dirty: boolean;
   saving: boolean;
   lastSavedAt: string | null;
-  simulation: SimulationState;
   aiPanelOpen: boolean;
 }
-
-const EMPTY_TELEMETRY: ArchitectureTelemetry = {
-  traffic: 0,
-  p95: 0,
-  errorRate: 0,
-  cpu: 0,
-  memory: 0,
-  cost: 0,
-};
 
 const initialState: EditorState = {
   architectureId: null,
@@ -77,7 +63,6 @@ const initialState: EditorState = {
   dirty: false,
   saving: false,
   lastSavedAt: null,
-  simulation: { running: false, tick: 0, telemetry: EMPTY_TELEMETRY },
   aiPanelOpen: false,
 };
 
@@ -128,7 +113,6 @@ const editorSlice = createSlice({
       state.past = [];
       state.future = [];
       state.dirty = false;
-      state.simulation = { running: false, tick: 0, telemetry: EMPTY_TELEMETRY };
     },
 
     /** Captures the current graph before an undoable interaction begins. */
@@ -323,53 +307,30 @@ const editorSlice = createSlice({
       state.lastSavedAt = action.payload;
     },
 
-    injectFailure(state, action: PayloadAction<string>) {
-      const node = state.nodes.find((n) => n.id === action.payload);
-      if (!node) return;
-      node.data = {
-        ...node.data,
-        health: "critical" as Health,
-        live: node.data.live
-          ? { ...node.data.live, errorRate: 0.6, cpu: 98, p95: node.data.live.p95 * 4 }
-          : undefined,
-      };
-    },
-
-    startSimulation(state) {
-      state.simulation.running = true;
-      state.simulation.tick = 0;
-    },
-
-    stopSimulation(state) {
-      state.simulation.running = false;
-      state.nodes.forEach((n) => {
-        n.data = { ...n.data, live: undefined };
-      });
-      state.edges.forEach((e) => {
-        e.data = e.data ? { ...e.data, live: undefined } : e.data;
-      });
-      state.simulation.telemetry = EMPTY_TELEMETRY;
-    },
-
-    applySimulation(
+    /** Overlays a completed run's per-node metrics and health onto the graph. */
+    applySimulationMetrics(
       state,
       action: PayloadAction<{
-        tick: number;
-        telemetry: ArchitectureTelemetry;
-        nodeMetrics: Record<string, EditorNodeData["live"]>;
-        edgeMetrics: Record<string, EditorEdgeData["live"]>;
+        nodeMetrics: Record<string, NodeLiveMetrics>;
+        nodeHealth: Record<string, Health>;
       }>,
     ) {
-      const { tick, telemetry, nodeMetrics, edgeMetrics } = action.payload;
-      state.simulation.tick = tick;
-      state.simulation.telemetry = telemetry;
+      const { nodeMetrics, nodeHealth } = action.payload;
       state.nodes.forEach((n) => {
-        const m = nodeMetrics[n.id];
-        if (m) n.data = { ...n.data, live: m, health: healthFromError(m.errorRate) };
+        const metrics = nodeMetrics[n.id];
+        const health = nodeHealth[n.id];
+        if (metrics) n.data = { ...n.data, live: metrics };
+        if (health) n.data = { ...n.data, health };
+      });
+    },
+
+    /** Clears any run overlays, restoring the baseline (pre-simulation) view. */
+    clearSimulationMetrics(state) {
+      state.nodes.forEach((n) => {
+        n.data = { ...n.data, live: undefined, health: "healthy" };
       });
       state.edges.forEach((e) => {
-        const m = edgeMetrics[e.id];
-        if (m && e.data) e.data = { ...e.data, live: m };
+        if (e.data) e.data = { ...e.data, live: undefined };
       });
     },
 
@@ -378,12 +339,6 @@ const editorSlice = createSlice({
     },
   },
 });
-
-function healthFromError(errorRate: number): Health {
-  if (errorRate >= 0.2) return "critical";
-  if (errorRate >= 0.05) return "degraded";
-  return "healthy";
-}
 
 export const {
   initEditor,
@@ -404,10 +359,8 @@ export const {
   setName,
   setSaving,
   markSaved,
-  injectFailure,
-  startSimulation,
-  stopSimulation,
-  applySimulation,
+  applySimulationMetrics,
+  clearSimulationMetrics,
   toggleAiPanel,
 } = editorSlice.actions;
 

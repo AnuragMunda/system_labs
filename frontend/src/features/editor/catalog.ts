@@ -77,6 +77,7 @@ function defaults(overrides: Partial<EditorNodeData>): Partial<EditorNodeData> {
     region: "us-east-1",
     timeoutMs: 500,
     retryPolicy: BASE_RETRY,
+    routingStrategy: "round_robin",
     traffic: 0,
     latencyMs: 20,
     capacity: 1000,
@@ -267,6 +268,9 @@ export const CLIENT_ITEM: CatalogItem = {
   costPerReplicaPerHour: 0,
   defaults: defaults({ replicas: 1, cpu: 0, memory: 0, latencyMs: 0, traffic: 5000 }),
 };
+
+/** Palette items: the component catalog plus the virtual client entry point. */
+export const PALETTE_CATALOG: CatalogItem[] = [...COMPONENT_CATALOG, CLIENT_ITEM];
 
 const BY_KIND = new Map<ComponentKind, CatalogItem>(
   [...COMPONENT_CATALOG, CLIENT_ITEM].map((item) => [item.kind, item]),

@@ -11,7 +11,7 @@ import { addNode } from "@/store/editorSlice";
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
-  COMPONENT_CATALOG,
+  PALETTE_CATALOG,
   getCatalogIcon,
 } from "../catalog";
 import { CLICK_DROP_POSITION, DND_MIME, type ComponentKind } from "../constants";
@@ -29,7 +29,7 @@ export function ComponentPalette({
 
   const grouped = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const filtered = COMPONENT_CATALOG.filter(
+    const filtered = PALETTE_CATALOG.filter(
       (c) =>
         !q ||
         c.label.toLowerCase().includes(q) ||

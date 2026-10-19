@@ -1,5 +1,5 @@
-import { ProjectPlaceholder } from "@/components/workspace/ProjectPlaceholder";
+import { SimulationsView } from "@/components/workspace/SimulationsView";
 
 export default function SimulationsPage() {
-  return <ProjectPlaceholder title="Simulations" />;
+  return <SimulationsView />;
 }

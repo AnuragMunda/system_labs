@@ -8,13 +8,12 @@
 // Every editable field dispatches `updateNodeData` / `updateEdgeData`; focus fires a
 // single history snapshot so an edit session collapses into one undo step.
 import { useState } from "react";
-import { AlertTriangle, Trash2, ArrowDownRight, ArrowUpRight, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Trash2, ArrowDownRight, ArrowUpRight, PanelRightClose, PanelRightOpen } from "lucide-react";
 
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   beginEdit,
   deleteSelected,
-  injectFailure,
   setSelection,
   snapshot,
   updateEdgeData,
@@ -30,10 +29,15 @@ import type {
   EditorNode,
   EditorNodeData,
   Protocol,
+  RoutingStrategy,
 } from "../types";
-import { toast } from "@/lib/utils";
 
 const HEALTH_RANK: Record<Health, number> = { healthy: 0, degraded: 1, critical: 2 };
+const ROUTING_STRATEGIES: { value: RoutingStrategy; label: string }[] = [
+  { value: "round_robin", label: "Round robin" },
+  { value: "random", label: "Random" },
+  { value: "least_connections", label: "Least connections" },
+];
 const PROTOCOLS: Protocol[] = [
   "http",
   "https",
@@ -362,14 +366,37 @@ function NodeInspector({ node }: { node: EditorNode }) {
         ) : null}
 
         {tab === "Networking" ? (
-          <FieldRow label="Region">
-            <input
-              value={d.region}
-              onFocus={onFocus}
-              onChange={(e) => patch({ region: e.target.value })}
-              className={inputCls}
-            />
-          </FieldRow>
+          <>
+            <FieldRow label="Region">
+              <input
+                value={d.region}
+                onFocus={onFocus}
+                onChange={(e) => patch({ region: e.target.value })}
+                className={inputCls}
+              />
+            </FieldRow>
+            <FieldRow label="Routing strategy">
+              <select
+                value={d.routingStrategy}
+                onChange={(e) =>
+                  patch({ routingStrategy: e.target.value as RoutingStrategy })
+                }
+                className={inputCls}
+              >
+                {ROUTING_STRATEGIES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </FieldRow>
+            {outgoing.length > 1 ? (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Used to choose among this component&apos;s {outgoing.length}{" "}
+                outgoing connections.
+              </p>
+            ) : null}
+          </>
         ) : null}
 
         {tab === "Reliability" ? (
@@ -423,8 +450,8 @@ function NodeInspector({ node }: { node: EditorNode }) {
             <Stat label="P95" value={`${live ? live.p95 : d.latencyMs}ms`} />
             <Stat label="P99" value={`${live ? live.p99 : Math.round(d.latencyMs * 1.8)}ms`} />
             <Stat label="Error rate" value={`${((live ? live.errorRate : d.errorRate ?? 0) * 100).toFixed(2)}%`} />
-            <Stat label="CPU" value={`${live ? live.cpu : Math.round(d.cpu)}%`} />
-            <Stat label="Memory" value={`${live ? live.memory : Math.round(d.memory)}%`} />
+            <Stat label="CPU" value={live ? (live.cpu === undefined ? "—" : `${live.cpu}%`) : `${Math.round(d.cpu)}%`} />
+            <Stat label="Memory" value={live ? (live.memory === undefined ? "—" : `${live.memory}%`) : `${Math.round(d.memory)}%`} />
           </div>
         ) : null}
 
@@ -447,18 +474,6 @@ function NodeInspector({ node }: { node: EditorNode }) {
             onSelect={(id) => dispatch(setSelection({ nodeId: id, edgeId: null }))}
           />
         </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            dispatch(injectFailure(node.id));
-            toast(`Failure injected into ${d.label}`);
-          }}
-          className="mt-1 inline-flex items-center justify-center gap-1.5 rounded-sm border border-danger/50 bg-danger/10 px-3 py-2 text-sm font-medium text-danger transition-colors hover:bg-danger/20"
-        >
-          <AlertTriangle className="size-3.5" />
-          Inject Failure
-        </button>
       </div>
     </div>
   );

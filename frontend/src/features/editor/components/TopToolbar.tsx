@@ -1,7 +1,7 @@
 "use client";
 
 // Editor top toolbar: breadcrumb (project / architecture), inline-editable name,
-// undo/redo, zoom controls + fit, Run Simulation toggle, Share, Export, and the AI
+// undo/redo, zoom controls + fit, simulation controls, Share, Export, and the AI
 // panel toggle. Zoom/fit actions use the React Flow instance (must be within a
 // ReactFlowProvider); zoom level is passed in from the canvas via the shell.
 import {
@@ -9,11 +9,9 @@ import {
   Download,
   Loader2,
   Maximize2,
-  Play,
   Redo2,
   Share2,
   Sparkles,
-  Square,
   Terminal,
   Undo2,
   ZoomIn,
@@ -24,7 +22,9 @@ import { useReactFlow } from "@xyflow/react";
 import Link from "next/link";
 
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { redo, setName, startSimulation, stopSimulation, toggleAiPanel, undo } from "@/store/editorSlice";
+import { redo, setName, toggleAiPanel, undo } from "@/store/editorSlice";
+import type { SimulationRunState } from "@/store/simulationsSlice";
+import { SimulationControls } from "@/features/simulations/SimulationControls";
 import { useEffect, useRef, useState } from "react";
 import { serializeEdge, serializeNode } from "../serialize";
 import { toast } from "@/lib/utils";
@@ -33,14 +33,25 @@ export function TopToolbar({
   projectName,
   projectId,
   zoom,
+  run,
+  submitting,
+  onStart,
+  onPause,
+  onResume,
+  onCancel,
 }: {
   projectName: string;
   projectId: string;
   zoom: number;
+  run?: SimulationRunState;
+  submitting: boolean;
+  onStart: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onCancel: () => void;
 }) {
   const dispatch = useAppDispatch();
   const name = useAppSelector((s) => s.editor.name);
-  const running = useAppSelector((s) => s.editor.simulation.running);
   const aiOpen = useAppSelector((s) => s.editor.aiPanelOpen);
   const canUndo = useAppSelector((s) => s.editor.past.length > 0);
   const canRedo = useAppSelector((s) => s.editor.future.length > 0);
@@ -66,6 +77,7 @@ export function TopToolbar({
     };
   }, [lastSavedAt, saving, dirty]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
   const nodes = useAppSelector((s) => s.editor.nodes);
   const edges = useAppSelector((s) => s.editor.edges);
   const { zoomIn, zoomOut, fitView } = useReactFlow();
@@ -193,18 +205,16 @@ export function TopToolbar({
 
         <div className="mx-1 h-6 w-px bg-border" />
 
-        <button
-          type="button"
-          onClick={() => dispatch(running ? stopSimulation() : startSimulation())}
-          className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors ${
-            running
-              ? "bg-danger text-danger-foreground hover:opacity-90"
-              : "bg-primary text-primary-foreground hover:opacity-90"
-          }`}
-        >
-          {running ? <Square className="size-3.5" /> : <Play className="size-3.5" />}
-          {running ? "Stop" : "Run Simulation"}
-        </button>
+        <SimulationControls
+          run={run}
+          submitting={submitting}
+          onStart={onStart}
+          onPause={onPause}
+          onResume={onResume}
+          onCancel={onCancel}
+        />
+
+        <div className="mx-1 h-6 w-px bg-border" />
 
         <button
           type="button"
