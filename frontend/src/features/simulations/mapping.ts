@@ -113,6 +113,7 @@ export function componentMetricsToLive(
       component.traffic.attempts > 0
         ? component.traffic.failedAttempts / component.traffic.attempts
         : 0,
+    queueDepth: component.queue.currentDepth,
   };
 }
 

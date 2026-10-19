@@ -57,6 +57,8 @@ export function EditorShell({
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const run = useSimulationRun(activeId);
+  const metricsSource = run?.results ?? run?.liveMetrics;
+  const running = run?.status === "running";
   const dirty = useAppSelector((s) => s.editor.dirty);
   const name = useAppSelector((s) => s.editor.name);
   const submitting = useAppSelector((s) => s.simulations.submitting);
@@ -101,16 +103,20 @@ export function EditorShell({
     dispatch(clearSimulationMetrics());
   }, [activeId, dispatch]);
 
-  // Overlay a completed run's per-node metrics and health onto the canvas.
+  // Overlay the current run's per-node metrics and health onto the canvas. While
+  // running we use the live snapshot (polled each second); once the aggregate
+  // report arrives it takes precedence. `running` gates the edge flow animation,
+  // and is enough on its own so source edges start flowing before the first poll.
   useEffect(() => {
-    if (!run?.results) return;
+    if (!metricsSource && !running) return;
     dispatch(
       applySimulationMetrics({
-        nodeMetrics: metricsToNodeLive(run.results),
-        nodeHealth: metricsToNodeHealth(run.results),
+        nodeMetrics: metricsSource ? metricsToNodeLive(metricsSource) : {},
+        nodeHealth: metricsSource ? metricsToNodeHealth(metricsSource) : {},
+        running,
       }),
     );
-  }, [run?.results, dispatch]);
+  }, [metricsSource, running, dispatch]);
 
   const flushSave = useCallback(async () => {
     const { name: currentName, nodes, edges } = store.getState().editor;

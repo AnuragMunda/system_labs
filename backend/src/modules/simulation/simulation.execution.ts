@@ -17,6 +17,7 @@
  */
 
 import { logger } from "@/lib/logger.js";
+import type { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
 import { allowedFromStatuses } from "@/simulation-engine/core/simulation-lifecycle.js";
 
 import { SimulationOrchestrator } from "./simulation.orchestrator.js";
@@ -186,6 +187,20 @@ export class SimulationExecutionManager {
   /** Resolves once every scheduled execution has settled. Primarily for tests. */
   async awaitIdle(): Promise<void> {
     await Promise.allSettled([...this.pending]);
+  }
+
+  /**
+   * Returns the in-memory metrics snapshot for an in-flight run at its current
+   * virtual time, or `null` when the id has no live run (not started, already
+   * disposed after reaching a terminal state, or the process restarted). The
+   * snapshot is a read-only copy; it never aliases mutable engine state.
+   */
+  getLiveMetrics(id: string): SimulationMetrics | null {
+    try {
+      return this.orchestrator.getMetrics(id);
+    } catch {
+      return null;
+    }
   }
 
   /** Reconstructs the run, drives it to a terminal state, then releases it. */

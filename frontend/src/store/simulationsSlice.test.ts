@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import reducer, {
   clearCreateError,
   createSimulation,
+  fetchSimulationMetrics,
   fetchSimulationResults,
   refreshSimulationStatus,
   startSimulation,
@@ -211,6 +212,69 @@ describe("refreshSimulationStatus", () => {
     expect(refreshed.runs["sim-1"].status).toBe("running");
     expect(refreshed.runs["sim-1"].currentTimeMs).toBe(12000);
     expect(refreshed.runs["sim-1"].durationMs).toBe(60000);
+  });
+});
+
+describe("fetchSimulationMetrics", () => {
+  it("attaches a live snapshot to the run without touching results", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(
+        makeDetails({ status: "running" }),
+        "req1",
+        INPUT,
+      ),
+    );
+    const live = reducer(
+      seeded,
+      fetchSimulationMetrics.fulfilled(makeMetrics(), "req2", "sim-1"),
+    );
+    expect(live.runs["sim-1"].liveMetrics?.requests.completed).toBe(95);
+    expect(live.runs["sim-1"].results).toBeNull();
+  });
+
+  it("ignores a null snapshot (transient fetch failure)", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(
+        makeDetails({ status: "running" }),
+        "req1",
+        INPUT,
+      ),
+    );
+    const live = reducer(
+      seeded,
+      fetchSimulationMetrics.fulfilled(null, "req2", "sim-1"),
+    );
+    expect(live.runs["sim-1"].liveMetrics).toBeNull();
+  });
+
+  it("is cleared once the aggregate results arrive", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(
+        makeDetails({ status: "running" }),
+        "req1",
+        INPUT,
+      ),
+    );
+    const withLive = reducer(
+      seeded,
+      fetchSimulationMetrics.fulfilled(makeMetrics(), "req2", "sim-1"),
+    );
+    const completed = reducer(
+      withLive,
+      fetchSimulationResults.fulfilled(
+        {
+          simulation: makeDetails({ status: "completed", currentTimeMs: 60000 }),
+          metrics: makeMetrics(),
+        },
+        "req3",
+        "sim-1",
+      ),
+    );
+    expect(completed.runs["sim-1"].liveMetrics).toBeNull();
+    expect(completed.runs["sim-1"].results?.requests.completed).toBe(95);
   });
 });
 

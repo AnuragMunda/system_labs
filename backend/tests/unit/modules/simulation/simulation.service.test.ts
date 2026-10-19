@@ -104,6 +104,7 @@ const execution = {
   pause: vi.fn(),
   resume: vi.fn(),
   cancel: vi.fn(),
+  getLiveMetrics: vi.fn(),
 } as unknown as SimulationExecutionManager;
 
 const service = new SimulationService(repo, archRepo, projectRepo, execution);
@@ -355,6 +356,79 @@ describe("SimulationService.getStatus", () => {
     await expect(service.getStatus(simId, otherUserId)).rejects.toMatchObject({
       statusCode: 404,
     });
+  });
+});
+
+describe("SimulationService.getMetrics", () => {
+  it("returns the live in-memory snapshot while a run is active", async () => {
+    const live = { simulationId: simId, recordedAtMs: 500 };
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      status: "running",
+      currentTimeMs: 500,
+    });
+    stubsOwned();
+    vi.mocked(execution.getLiveMetrics).mockReturnValue(live as never);
+
+    const result = await service.getMetrics(simId, ownerId);
+
+    expect(execution.getLiveMetrics).toHaveBeenCalledWith(simId);
+    expect(result).toBe(live);
+  });
+
+  it("falls back to the persisted report once the live run is gone", async () => {
+    const report = { simulationId: simId };
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      status: "completed",
+      result: report as never,
+    });
+    stubsOwned();
+    vi.mocked(execution.getLiveMetrics).mockReturnValue(null);
+
+    await expect(service.getMetrics(simId, ownerId)).resolves.toBe(report);
+  });
+
+  it("rejects metrics for a not-yet-started run with a 409", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+
+    await expect(service.getMetrics(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "CONFLICT",
+    });
+    expect(execution.getLiveMetrics).not.toHaveBeenCalled();
+  });
+
+  it("rejects metrics for an active run without a live snapshot with a 409", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "running" });
+    stubsOwned();
+    vi.mocked(execution.getLiveMetrics).mockReturnValue(null);
+
+    await expect(service.getMetrics(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "CONFLICT",
+    });
+  });
+
+  it("throws NotFoundError for a terminal run with no persisted report", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "failed" });
+    stubsOwned();
+    vi.mocked(execution.getLiveMetrics).mockReturnValue(null);
+
+    await expect(service.getMetrics(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  it("enforces visibility before returning metrics", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({ ...row, status: "running" });
+    stubsOwned();
+
+    await expect(service.getMetrics(simId, otherUserId)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(execution.getLiveMetrics).not.toHaveBeenCalled();
   });
 });
 

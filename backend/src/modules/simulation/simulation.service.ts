@@ -21,6 +21,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "@/lib/apiError.js";
+import type { SimulationMetrics } from "@/domain/simulation/metrics.types.js";
 import {
   allowedFromStatuses,
   type LifecycleAction,
@@ -126,6 +127,43 @@ export class SimulationService {
       completedAt: simulation.completedAt,
       error: simulation.error,
     };
+  }
+
+  /**
+   * Returns a simulation's metrics at its current virtual time while it is
+   * in-flight, or the persisted aggregate report once it has completed. This
+   * powers the live run view: callers poll it while the run is active to get
+   * per-component traffic, latency, queue depth, and health.
+   */
+  async getMetrics(id: string, userId?: string): Promise<SimulationMetrics> {
+    const simulation = await this.repository.findById(id);
+
+    await this.assertCanRead(simulation, userId);
+
+    // Live snapshots only exist for a run that has been claimed for execution.
+    if (simulation.status === "created") {
+      throw ConflictError("Simulation has not been started.");
+    }
+
+    const live = this.execution.getLiveMetrics(id);
+
+    if (live) {
+      return live;
+    }
+
+    // The run is no longer in memory (completed/failed/cancelled or after a
+    // restart); fall back to the persisted aggregate report when one exists.
+    if (simulation.result !== null) {
+      return simulation.result;
+    }
+
+    // Active in the DB but not yet in memory (still spinning up) — a transient
+    // state the caller should simply retry on the next poll.
+    if (simulation.status === "running" || simulation.status === "paused") {
+      throw ConflictError("Simulation metrics are not ready yet.");
+    }
+
+    throw NotFoundError();
   }
 
   /**

@@ -159,6 +159,7 @@ describe("component live metrics", () => {
     expect(live.p95).toBe(20);
     expect(live.p99).toBe(40);
     expect(live.errorRate).toBeCloseTo(0.1, 3);
+    expect(live.queueDepth).toBe(0);
   });
 
   it("maps metrics to node live and health records", () => {

@@ -35,8 +35,15 @@ export function ConnectionEdge({
   });
 
   const live = data?.live;
+  const flowing = Boolean(data?.flowing);
   const protocol = data?.protocol ?? "http";
   const rps = live ? live.rps : data?.trafficRate ?? 0;
+  // Packets traverse slower on higher-latency connections, clamped so the
+  // animation stays readable at both extremes.
+  const durationSec = Math.min(
+    2.2,
+    Math.max(0.9, 0.6 + (live?.latency ?? 0) / 250),
+  );
 
   return (
     <>
@@ -49,7 +56,7 @@ export function ConnectionEdge({
           strokeWidth: selected ? 2 : 1.5,
         }}
       />
-      {live ? (
+      {flowing ? (
         <>
           <BaseEdge
             id={`${id}-flow`}
@@ -57,9 +64,21 @@ export function ConnectionEdge({
             className="animate-flow"
             style={{ stroke: HEALTH_STYLES.healthy.edgeVar, strokeWidth: 1.5 }}
           />
-          <circle r={2.5} fill="var(--color-primary)" className="animate-pulse-dot">
-            <animateMotion dur="1.4s" repeatCount="indefinite" path={edgePath} />
-          </circle>
+          {[0, 0.5, 1].map((begin) => (
+            <circle
+              key={begin}
+              r={2.5}
+              fill="var(--color-primary)"
+              style={{ pointerEvents: "none" }}
+            >
+              <animateMotion
+                dur={`${durationSec}s`}
+                begin={`${begin}s`}
+                repeatCount="indefinite"
+                path={edgePath}
+              />
+            </circle>
+          ))}
         </>
       ) : null}
 

@@ -248,6 +248,14 @@ export async function getSimulationResultsApi(
   );
 }
 
+export async function getSimulationMetricsApi(
+  id: string,
+): Promise<SimulationMetrics> {
+  return apiFetch<SimulationMetrics>(
+    `/api/v1/simulations/${encodeURIComponent(id)}/metrics`,
+  );
+}
+
 export async function startSimulationApi(
   id: string,
 ): Promise<SimulationDetails> {

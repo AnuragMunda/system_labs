@@ -51,22 +51,55 @@ export function ComponentNode({ data, selected }: NodeProps<EditorNode>) {
         {getCatalogLabel(data.kind)}
       </div>
 
-      <div className="grid grid-cols-3 gap-x-2 gap-y-1 px-3 pb-2 font-mono text-[10px] leading-none text-muted-foreground">
-        <div className="flex flex-col gap-0.5">
-          <span>req/s</span>
-          <span className="text-foreground">{rps.toLocaleString()}</span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span>p95</span>
-          <span className={styles.value}>{p95}ms</span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span>cpu</span>
-          <span className="text-foreground">
-            {cpu === undefined ? "—" : `${cpu}%`}
-          </span>
-        </div>
-        <div className="col-span-3 flex items-center justify-between border-t border-border pt-1 text-[10px]">
+      <div
+        className={`grid gap-x-2 gap-y-1 px-3 pb-2 font-mono text-[10px] leading-none text-muted-foreground ${
+          live ? "grid-cols-2" : "grid-cols-3"
+        }`}
+      >
+        {live ? (
+          <>
+            <div className="flex flex-col gap-0.5">
+              <span>req/s</span>
+              <span className="text-foreground">{rps.toLocaleString()}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span>p95</span>
+              <span className={styles.value}>{p95}ms</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span>error</span>
+              <span className="text-foreground">
+                {(live.errorRate * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span>queue</span>
+              <span className="text-foreground">
+                {live.queueDepth === undefined
+                  ? "—"
+                  : live.queueDepth.toLocaleString()}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-col gap-0.5">
+              <span>req/s</span>
+              <span className="text-foreground">{rps.toLocaleString()}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span>p95</span>
+              <span className={styles.value}>{p95}ms</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span>cpu</span>
+              <span className="text-foreground">
+                {cpu === undefined ? "—" : `${cpu}%`}
+              </span>
+            </div>
+          </>
+        )}
+        <div className="col-span-full flex items-center justify-between border-t border-border pt-1 text-[10px]">
           <span>replicas ×{data.replicas}</span>
           <span className="text-muted-foreground">{data.region}</span>
         </div>

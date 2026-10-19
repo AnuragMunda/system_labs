@@ -98,6 +98,22 @@ export const getSimulationStatus = asyncHandler(
   },
 );
 
+/**
+ * GET /api/v1/simulations/:id/metrics — fetches the run's metrics at its
+ * current virtual time while in-flight, or the persisted report once complete.
+ * Clients poll this during an active run to drive the live canvas view.
+ */
+export const getSimulationMetrics = asyncHandler(
+  async (req: Request, res: Response) => {
+    const metrics = await simulationService.getMetrics(
+      requireId(req),
+      req.user?.id,
+    );
+
+    return ApiResponse.ok(res, metrics);
+  },
+);
+
 /** GET /api/v1/simulations/:id/results — fetches a simulation's aggregate report. */
 export const getSimulationResults = asyncHandler(
   async (req: Request, res: Response) => {

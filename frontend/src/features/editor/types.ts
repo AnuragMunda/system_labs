@@ -79,6 +79,7 @@ export interface NodeLiveMetrics {
   errorRate: number;
   cpu?: number;
   memory?: number;
+  queueDepth?: number;
 }
 
 export interface EdgeLiveMetrics {
@@ -121,6 +122,9 @@ export interface EditorEdgeData extends Record<string, unknown> {
   latencyMs: number;
 
   live?: EdgeLiveMetrics;
+  /** Transient: true while the source node is actively carrying traffic in a
+   * running simulation; drives the animated packet flow (not persisted). */
+  flowing?: boolean;
 }
 
 export type EditorNode = Node<EditorNodeData, "component">;

@@ -307,20 +307,55 @@ const editorSlice = createSlice({
       state.lastSavedAt = action.payload;
     },
 
-    /** Overlays a completed run's per-node metrics and health onto the graph. */
+    /** Overlays a simulation run's per-node metrics and health onto the graph,
+     * plus a derived live/flowing overlay on each edge. `running` gates the edge
+     * flow animation so a paused or finished run freezes values but stops motion. */
     applySimulationMetrics(
       state,
       action: PayloadAction<{
         nodeMetrics: Record<string, NodeLiveMetrics>;
         nodeHealth: Record<string, Health>;
+        running: boolean;
       }>,
     ) {
-      const { nodeMetrics, nodeHealth } = action.payload;
+      const { nodeMetrics, nodeHealth, running } = action.payload;
       state.nodes.forEach((n) => {
         const metrics = nodeMetrics[n.id];
         const health = nodeHealth[n.id];
         if (metrics) n.data = { ...n.data, live: metrics };
         if (health) n.data = { ...n.data, health };
+      });
+
+      // The traffic source (client/load balancer) generates requests without
+      // processing them, so it reports no throughput. Treat nodes with no
+      // incoming edges as sources: their outgoing edges carry traffic whenever
+      // the run is active.
+      const incomingTargets = new Set(state.edges.map((e) => e.target));
+      const carriesTraffic = (nodeId: string): boolean => {
+        const metrics = nodeMetrics[nodeId];
+        return (
+          (metrics?.rps ?? 0) > 0 || (metrics?.queueDepth ?? 0) > 0
+        );
+      };
+
+      state.edges.forEach((e) => {
+        if (!e.data) return;
+        const source = nodeMetrics[e.source];
+        const target = nodeMetrics[e.target];
+        const rps = Math.max(source?.rps ?? 0, target?.rps ?? 0);
+        const active =
+          carriesTraffic(e.source) ||
+          carriesTraffic(e.target) ||
+          !incomingTargets.has(e.source);
+        e.data = {
+          ...e.data,
+          live: {
+            rps,
+            latency: source?.p95 ?? 0,
+            errors: source?.errorRate ?? 0,
+          },
+          flowing: running && active,
+        };
       });
     },
 
@@ -330,7 +365,7 @@ const editorSlice = createSlice({
         n.data = { ...n.data, live: undefined, health: "healthy" };
       });
       state.edges.forEach((e) => {
-        if (e.data) e.data = { ...e.data, live: undefined };
+        if (e.data) e.data = { ...e.data, live: undefined, flowing: false };
       });
     },
 

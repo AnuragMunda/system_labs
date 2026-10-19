@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
+  fetchSimulationMetrics,
   fetchSimulationResults,
   refreshSimulationStatus,
   type SimulationRunState,
@@ -32,6 +33,15 @@ export function useSimulationRun(id: string | null): SimulationRunState | undefi
     if (!id || !status || !isActiveStatus(status)) return;
     const interval = window.setInterval(() => {
       dispatch(refreshSimulationStatus(id));
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [id, status, dispatch]);
+
+  useEffect(() => {
+    if (!id || status !== "running") return;
+    dispatch(fetchSimulationMetrics(id));
+    const interval = window.setInterval(() => {
+      dispatch(fetchSimulationMetrics(id));
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [id, status, dispatch]);

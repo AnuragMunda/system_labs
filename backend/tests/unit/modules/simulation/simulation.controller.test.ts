@@ -14,6 +14,7 @@ vi.mock("@/modules/simulation/index.js", () => ({
     create: vi.fn(),
     findById: vi.fn(),
     getStatus: vi.fn(),
+    getMetrics: vi.fn(),
     getResults: vi.fn(),
     getPaginated: vi.fn(),
     start: vi.fn(),
@@ -30,6 +31,7 @@ const {
   getSimulations,
   getSimulationById,
   getSimulationStatus,
+  getSimulationMetrics,
   getSimulationResults,
   startSimulation,
   pauseSimulation,
@@ -285,6 +287,54 @@ describe("getSimulationStatus", () => {
     await flush();
 
     expect(simulationService.getStatus).not.toHaveBeenCalled();
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 400 });
+  });
+});
+
+describe("getSimulationMetrics", () => {
+  it("responds with 200 and the metrics snapshot", async () => {
+    const req = mockAuthReq({ params: { id: uuid } });
+    const res = mockRes();
+    const next = mockNext();
+
+    const metrics = { simulationId: uuid, recordedAtMs: 10 };
+    vi.mocked(simulationService.getMetrics).mockResolvedValue(metrics as never);
+
+    await getSimulationMetrics(req, res, next);
+    await flush();
+
+    expect(simulationService.getMetrics).toHaveBeenCalledWith(uuid, uuid);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: "Request successful",
+      data: metrics,
+    });
+  });
+
+  it("passes a service error to next", async () => {
+    const req = mockAuthReq({ params: { id: uuid } });
+    const res = mockRes();
+    const next = mockNext();
+
+    const error = new Error("not ready");
+    vi.mocked(simulationService.getMetrics).mockRejectedValue(error as never);
+
+    await getSimulationMetrics(req, res, next);
+    await flush();
+
+    await vi.waitFor(() => expect(next).toHaveBeenCalledWith(error));
+  });
+
+  it("passes a BadRequestError to next for an invalid id", async () => {
+    const req = mockAuthReq({ params: { id: "nope" } });
+    const res = mockRes();
+    const next = mockNext();
+
+    await getSimulationMetrics(req, res, next);
+    await flush();
+
+    expect(simulationService.getMetrics).not.toHaveBeenCalled();
     expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 400 });
   });
 });

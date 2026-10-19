@@ -3,7 +3,7 @@
  *
  * @description Express router mounting the simulation module's endpoints.
  * The list requires an authenticated owner (like the project/architecture
- * lists); single-run reads (details/status/results) inherit the parent
+ * lists); single-run reads (details/status/metrics/results) inherit the parent
  * project's visibility and so use `authenticateOptional`; create and lifecycle
  * controls require an authenticated user and are additionally checked for
  * ownership in the service.
@@ -21,6 +21,7 @@ import {
   cancelSimulation,
   createSimulation,
   getSimulationById,
+  getSimulationMetrics,
   getSimulationResults,
   getSimulations,
   getSimulationStatus,
@@ -42,6 +43,10 @@ simulationRouter.route("/:id").get(authenticateOptional, getSimulationById);
 simulationRouter
   .route("/:id/status")
   .get(authenticateOptional, getSimulationStatus);
+
+simulationRouter
+  .route("/:id/metrics")
+  .get(authenticateOptional, getSimulationMetrics);
 
 simulationRouter
   .route("/:id/results")

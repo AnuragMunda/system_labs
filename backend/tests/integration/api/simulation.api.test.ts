@@ -388,6 +388,45 @@ describeDb("Simulations API", () => {
       expect(terminal.completedAt).toBeDefined();
     });
 
+    it("exposes the persisted metrics report through the metrics endpoint", async () => {
+      const { simulation } = await ownedSimulation();
+
+      await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/start`)
+        .set(...authHeader())
+        .expect(202);
+
+      await waitForTerminal(simulation.id);
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/metrics`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ simulationId: simulation.id });
+      expect(res.body.data.durationMs).toBe(1000);
+    });
+
+    it("returns 409 for metrics before the run has started", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}/metrics`)
+        .set(...authHeader());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ success: false, code: "CONFLICT" });
+    });
+
+    it("returns 404 for metrics of an unknown run", async () => {
+      const res = await request(app)
+        .get("/api/v1/simulations/5b47bb24-2f9b-4e40-a1c5-4d2d5bce0f91/metrics")
+        .set(...authHeader());
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: "NOT_FOUND" });
+    });
+
     it("returns 409 when starting a simulation that already completed", async () => {
       const { simulation } = await ownedSimulation();
 

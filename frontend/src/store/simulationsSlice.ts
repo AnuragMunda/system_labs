@@ -3,6 +3,7 @@ import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import {
   cancelSimulationApi,
   createSimulationApi,
+  getSimulationMetricsApi,
   getSimulationResultsApi,
   getSimulationStatusApi,
   pauseSimulationApi,
@@ -24,6 +25,7 @@ export interface SimulationRunState {
   completedAt: string | null;
   error: string | null;
   results: SimulationMetrics | null;
+  liveMetrics: SimulationMetrics | null;
   pending: boolean;
   actionError: string | null;
 }
@@ -58,6 +60,7 @@ function emptyRun(id: string, architectureId: string): SimulationRunState {
     completedAt: null,
     error: null,
     results: null,
+    liveMetrics: null,
     pending: false,
     actionError: null,
   };
@@ -74,6 +77,7 @@ function fromDetails(details: SimulationDetails): SimulationRunState {
     completedAt: details.completedAt,
     error: details.error,
     results: null,
+    liveMetrics: null,
     pending: false,
     actionError: null,
   };
@@ -83,6 +87,7 @@ function applyDetails(state: SimulationsState, details: SimulationDetails): void
   const existing = state.runs[details.id];
   const next = fromDetails(details);
   next.results = existing?.results ?? null;
+  next.liveMetrics = existing?.liveMetrics ?? null;
   state.runs[details.id] = next;
 }
 
@@ -177,6 +182,22 @@ export const fetchSimulationResults = createAsyncThunk(
       return await getSimulationResultsApi(id);
     } catch (error) {
       return rejectWithValue(errorMessage(error));
+    }
+  },
+);
+
+/**
+ * Fetches a live metrics snapshot for an in-flight run. Failures are swallowed
+ * (resolving to `null`) so a transient 404/409 — expected in the brief window
+ * before the engine registers the run — never surfaces as a run error.
+ */
+export const fetchSimulationMetrics = createAsyncThunk(
+  "simulations/fetchMetrics",
+  async (id: string): Promise<SimulationMetrics | null> => {
+    try {
+      return await getSimulationMetricsApi(id);
+    } catch {
+      return null;
     }
   },
 );
@@ -277,6 +298,11 @@ const simulationsSlice = createSlice({
         const run = state.runs[action.meta.arg];
         if (run) run.actionError = (action.payload as string | null) ?? null;
       })
+      .addCase(fetchSimulationMetrics.fulfilled, (state, action) => {
+        if (!action.payload) return;
+        const run = state.runs[action.meta.arg];
+        if (run) run.liveMetrics = action.payload;
+      })
       .addCase(fetchSimulationResults.fulfilled, (state, action) => {
         const { simulation, metrics } = action.payload;
         const existing =
@@ -292,6 +318,7 @@ const simulationsSlice = createSlice({
           completedAt: simulation.completedAt,
           error: simulation.error,
           results: metrics,
+          liveMetrics: null,
         };
       });
   },
