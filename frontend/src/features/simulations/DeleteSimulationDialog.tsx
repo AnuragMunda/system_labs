@@ -9,12 +9,12 @@ import { statusLabel } from "./mapping";
 
 function DeleteSimulationModalContent({
   simulation,
-  architectureName,
+  simulationLabel,
   onClose,
   onConfirm,
 }: {
   simulation: SimulationSummary;
-  architectureName: string;
+  simulationLabel: string;
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
@@ -83,7 +83,7 @@ function DeleteSimulationModalContent({
           <p className="text-sm leading-relaxed text-muted-foreground">
             Are you sure you want to delete the{" "}
             <span className="font-medium text-foreground">
-              {architectureName}
+              {simulationLabel}
             </span>{" "}
             simulation? Its events and metrics will be permanently deleted. This
             action cannot be undone.
@@ -126,13 +126,13 @@ function DeleteSimulationModalContent({
 
 export function DeleteSimulationDialog({
   simulation,
-  architectureName,
+  simulationLabel,
   open,
   onClose,
   onConfirm,
 }: {
   simulation: SimulationSummary;
-  architectureName: string;
+  simulationLabel: string;
   open: boolean;
   onClose: () => void;
   onConfirm: () => Promise<void>;
@@ -141,7 +141,7 @@ export function DeleteSimulationDialog({
   return createPortal(
     <DeleteSimulationModalContent
       simulation={simulation}
-      architectureName={architectureName}
+      simulationLabel={simulationLabel}
       onClose={onClose}
       onConfirm={onConfirm}
     />,

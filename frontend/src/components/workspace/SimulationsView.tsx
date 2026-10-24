@@ -32,14 +32,46 @@ function formatRelative(iso: string): string {
   return `${days}d ago`;
 }
 
+function buildSimulationSerials(
+  items: SimulationSummary[],
+): Map<string, number> {
+  const groups = new Map<string, SimulationSummary[]>();
+
+  for (const sim of items) {
+    const group = groups.get(sim.architectureId);
+    if (group) group.push(sim);
+    else groups.set(sim.architectureId, [sim]);
+  }
+
+  const serials = new Map<string, number>();
+
+  for (const group of groups.values()) {
+    const ordered = [...group].sort((a, b) => {
+      const byCreatedAt = a.createdAt.localeCompare(b.createdAt);
+      return byCreatedAt !== 0 ? byCreatedAt : a.id.localeCompare(b.id);
+    });
+
+    ordered.forEach((sim, index) => serials.set(sim.id, index + 1));
+  }
+
+  return serials;
+}
+
 export function SimulationsView() {
   const { projectId, architectures } = useWorkspace();
   const params = useMemo(() => ({ projectId }), [projectId]);
   const { items, loading, error, total, reload } = useSimulationList(params);
   const [deleting, setDeleting] = useState<SimulationSummary | null>(null);
+  const serials = useMemo(() => buildSimulationSerials(items), [items]);
 
   const architectureName = (id: string) =>
     architectures.find((a) => a.id === id)?.name ?? "Architecture";
+
+  const simulationLabel = (sim: SimulationSummary) => {
+    const name = architectureName(sim.architectureId);
+    const serial = serials.get(sim.id);
+    return serial === undefined ? name : `${name} #${serial}`;
+  };
 
   async function handleDelete(sim: SimulationSummary) {
     await deleteSimulationApi(sim.id);
@@ -98,6 +130,7 @@ export function SimulationsView() {
               key={sim.id}
               sim={sim}
               architectureName={architectureName(sim.architectureId)}
+              serial={serials.get(sim.id)}
               href={`/projects/${projectId}/simulations/${sim.id}`}
               onDelete={setDeleting}
             />
@@ -108,7 +141,7 @@ export function SimulationsView() {
       {deleting ? (
         <DeleteSimulationDialog
           simulation={deleting}
-          architectureName={architectureName(deleting.architectureId)}
+          simulationLabel={simulationLabel(deleting)}
           open
           onClose={() => setDeleting(null)}
           onConfirm={() => handleDelete(deleting)}
@@ -121,11 +154,13 @@ export function SimulationsView() {
 function SimulationRow({
   sim,
   architectureName,
+  serial,
   href,
   onDelete,
 }: {
   sim: SimulationSummary;
   architectureName: string;
+  serial?: number;
   href: string;
   onDelete: (sim: SimulationSummary) => void;
 }) {
@@ -135,11 +170,19 @@ function SimulationRow({
     <li className="flex items-center gap-2 px-4 py-3 transition-colors hover:bg-muted/40">
       <Link
         href={href}
+        aria-label={`${architectureName}${
+          serial === undefined ? "" : ` #${serial}`
+        }, ${statusLabel(sim.status)}, ${formatRelative(sim.createdAt)}`}
         className="flex min-w-0 flex-1 items-center justify-between gap-4"
       >
         <div className="flex min-w-0 flex-col">
           <span className="text-sm font-medium text-foreground">
             {architectureName}
+            {serial === undefined ? null : (
+              <span className="ml-1.5 font-mono text-xs font-normal text-muted-foreground">
+                #{serial}
+              </span>
+            )}
           </span>
           <span className="truncate text-xs text-muted-foreground">
             {statusLabel(sim.status)} · {formatRelative(sim.createdAt)}
@@ -162,7 +205,9 @@ function SimulationRow({
         <button
           type="button"
           onClick={() => onDelete(sim)}
-          aria-label={`Delete simulation for ${architectureName}`}
+          aria-label={`Delete simulation for ${architectureName}${
+            serial === undefined ? "" : ` #${serial}`
+          }`}
           aria-haspopup="dialog"
           title="Delete simulation"
           className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-danger/10 hover:text-danger"

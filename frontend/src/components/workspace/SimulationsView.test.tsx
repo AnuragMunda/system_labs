@@ -35,6 +35,12 @@ const architecture: BackendArchitecture = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
+const ordersArchitecture: BackendArchitecture = {
+  ...architecture,
+  id: "arch-2",
+  name: "Orders",
+};
+
 function makeSummary(
   overrides: Partial<SimulationSummary> = {},
 ): SimulationSummary {
@@ -54,11 +60,15 @@ function makeSummary(
   };
 }
 
-function setup(sim = makeSummary()) {
+function setup(
+  sim: SimulationSummary | SimulationSummary[] = makeSummary(),
+  architectureList: BackendArchitecture[] = [architecture],
+) {
+  const items = Array.isArray(sim) ? sim : [sim];
   const reload = vi.fn();
   vi.mocked(useSimulationList).mockReturnValue({
-    items: [sim],
-    total: 1,
+    items,
+    total: items.length,
     loading: false,
     error: null,
     reload,
@@ -69,7 +79,7 @@ function setup(sim = makeSummary()) {
       value={{
         projectId: "proj-1",
         project: null,
-        architectures: [architecture],
+        architectures: architectureList,
         reload: vi.fn(),
       }}
     >
@@ -85,6 +95,53 @@ beforeEach(() => {
   vi.mocked(deleteSimulationApi).mockReset();
 });
 
+describe("SimulationsView serial numbering", () => {
+  it("numbers runs of the same architecture from oldest to newest", () => {
+    setup([
+      makeSummary({
+        id: "sim-newer",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      }),
+      makeSummary({
+        id: "sim-older",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ]);
+
+    expect(
+      screen.getByRole("link", { name: /payments #2/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /payments #1/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts numbering independently for each architecture", () => {
+    setup(
+      [
+        makeSummary({
+          id: "sim-payments",
+          architectureId: "arch-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+        makeSummary({
+          id: "sim-orders",
+          architectureId: "arch-2",
+          createdAt: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+      [architecture, ordersArchitecture],
+    );
+
+    expect(
+      screen.getByRole("link", { name: /payments #1/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /orders #1/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("SimulationsView delete flow", () => {
   it("confirms, deletes, reloads, and closes the dialog", async () => {
     vi.mocked(deleteSimulationApi).mockResolvedValue({} as SimulationDetails);
@@ -95,6 +152,7 @@ describe("SimulationsView delete flow", () => {
     );
 
     const dialog = screen.getByRole("dialog", { name: /delete simulation/i });
+    expect(dialog).toHaveTextContent(/payments #1/i);
     expect(dialog).toHaveTextContent(/events and metrics/i);
     expect(dialog).toHaveTextContent(/completed/i);
 
