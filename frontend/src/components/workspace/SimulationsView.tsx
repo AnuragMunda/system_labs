@@ -1,18 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
-import { Activity, ChevronRight } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Activity, ChevronRight, Trash2 } from "lucide-react";
 
 import { useWorkspace } from "./workspace-context";
 import { useSimulationList } from "@/features/simulations/useSimulationList";
+import { DeleteSimulationDialog } from "@/features/simulations/DeleteSimulationDialog";
 import { SimulationStatusPill } from "@/features/simulations/SimulationStatusPill";
 import {
   isActiveStatus,
   runProgressPercent,
   statusLabel,
 } from "@/features/simulations/mapping";
-import type { SimulationSummary } from "@/lib/api/simulations";
+import {
+  deleteSimulationApi,
+  type SimulationSummary,
+} from "@/lib/api/simulations";
 
 function formatRelative(iso: string): string {
   const then = new Date(iso).getTime();
@@ -31,10 +35,16 @@ function formatRelative(iso: string): string {
 export function SimulationsView() {
   const { projectId, architectures } = useWorkspace();
   const params = useMemo(() => ({ projectId }), [projectId]);
-  const { items, loading, error, total } = useSimulationList(params);
+  const { items, loading, error, total, reload } = useSimulationList(params);
+  const [deleting, setDeleting] = useState<SimulationSummary | null>(null);
 
   const architectureName = (id: string) =>
     architectures.find((a) => a.id === id)?.name ?? "Architecture";
+
+  async function handleDelete(sim: SimulationSummary) {
+    await deleteSimulationApi(sim.id);
+    reload();
+  }
 
   return (
     <section className="flex flex-col gap-4">
@@ -89,9 +99,20 @@ export function SimulationsView() {
               sim={sim}
               architectureName={architectureName(sim.architectureId)}
               href={`/projects/${projectId}/simulations/${sim.id}`}
+              onDelete={setDeleting}
             />
           ))}
         </ul>
+      ) : null}
+
+      {deleting ? (
+        <DeleteSimulationDialog
+          simulation={deleting}
+          architectureName={architectureName(deleting.architectureId)}
+          open
+          onClose={() => setDeleting(null)}
+          onConfirm={() => handleDelete(deleting)}
+        />
       ) : null}
     </section>
   );
@@ -101,18 +122,20 @@ function SimulationRow({
   sim,
   architectureName,
   href,
+  onDelete,
 }: {
   sim: SimulationSummary;
   architectureName: string;
   href: string;
+  onDelete: (sim: SimulationSummary) => void;
 }) {
   const progress = runProgressPercent(sim.currentTimeMs, sim.durationMs);
 
   return (
-    <li>
+    <li className="flex items-center gap-2 px-4 py-3 transition-colors hover:bg-muted/40">
       <Link
         href={href}
-        className="flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-muted/40"
+        className="flex min-w-0 flex-1 items-center justify-between gap-4"
       >
         <div className="flex min-w-0 flex-col">
           <span className="text-sm font-medium text-foreground">
@@ -135,6 +158,18 @@ function SimulationRow({
           <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
         </div>
       </Link>
+      {!isActiveStatus(sim.status) ? (
+        <button
+          type="button"
+          onClick={() => onDelete(sim)}
+          aria-label={`Delete simulation for ${architectureName}`}
+          aria-haspopup="dialog"
+          title="Delete simulation"
+          className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-danger/10 hover:text-danger"
+        >
+          <Trash2 className="size-4" aria-hidden="true" />
+        </button>
+      ) : null}
     </li>
   );
 }
