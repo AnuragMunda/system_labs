@@ -64,6 +64,10 @@ export const simulationsTable = pgTable(
     // Human-readable reason a run ended in `failed` (engine error or an
     // interrupted execution), otherwise null.
     error: text("error"),
+    // Set only when the user explicitly saves the run. Null means the run is an
+    // unsaved draft: it still exists for execution/status/results, but is hidden
+    // from saved simulation lists.
+    savedAt: timestamp("saved_at"),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

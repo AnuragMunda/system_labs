@@ -21,6 +21,8 @@ vi.mock("@/modules/simulation/index.js", () => ({
     pause: vi.fn(),
     resume: vi.fn(),
     cancel: vi.fn(),
+    save: vi.fn(),
+    remove: vi.fn(),
   },
 }));
 
@@ -37,6 +39,8 @@ const {
   pauseSimulation,
   resumeSimulation,
   cancelSimulation,
+  saveSimulation,
+  deleteSimulation,
 } = await import("../../../../src/modules/simulation/simulation.controller.js");
 import { ApiError } from "../../../../src/lib/index.js";
 
@@ -144,6 +148,7 @@ describe("getSimulations", () => {
     await flush();
 
     expect(simulationService.getPaginated).toHaveBeenCalledWith(uuid, {
+      saved: true,
       page: 1,
       limit: 20,
     });
@@ -173,6 +178,7 @@ describe("getSimulations", () => {
     expect(simulationService.getPaginated).toHaveBeenCalledWith(uuid, {
       architectureId: uuid,
       projectId: uuid,
+      saved: true,
       page: 2,
       limit: 5,
     });
@@ -482,6 +488,102 @@ describe("pauseSimulation / resumeSimulation / cancelSimulation", () => {
     const next = mockNext();
 
     await handler(req, res, next);
+    await flush();
+
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 401 });
+  });
+});
+
+describe("saveSimulation", () => {
+  it("saves the run for the caller and responds with 200", async () => {
+    const req = mockAuthReq({ params: { id: uuid } });
+    const res = mockRes();
+    const next = mockNext();
+
+    const saved = { id: uuid, savedAt: "2026-01-01T00:00:00.000Z" };
+    vi.mocked(simulationService.save).mockResolvedValue(saved as never);
+
+    await saveSimulation(req, res, next);
+    await flush();
+
+    expect(simulationService.save).toHaveBeenCalledWith(uuid, uuid);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: "Simulation saved successfully",
+      data: saved,
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-uuid id", async () => {
+    const req = mockAuthReq({ params: { id: "nope" } });
+    const res = mockRes();
+    const next = mockNext();
+
+    await saveSimulation(req, res, next);
+    await flush();
+
+    expect(simulationService.save).not.toHaveBeenCalled();
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it("requires authentication", async () => {
+    const req = { params: { id: uuid } } as unknown as Request;
+    const res = mockRes();
+    const next = mockNext();
+
+    await saveSimulation(req, res, next);
+    await flush();
+
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 401 });
+  });
+});
+
+describe("deleteSimulation", () => {
+  it("deletes the run for the caller and responds with 200", async () => {
+    const req = mockAuthReq({ params: { id: uuid } });
+    const res = mockRes();
+    const next = mockNext();
+
+    const deleted = { id: uuid, status: "completed" };
+    vi.mocked(simulationService.remove).mockResolvedValue(deleted as never);
+
+    await deleteSimulation(req, res, next);
+    await flush();
+
+    expect(simulationService.remove).toHaveBeenCalledWith(uuid, uuid);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: "Simulation deleted successfully",
+      data: deleted,
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-uuid id", async () => {
+    const req = mockAuthReq({ params: { id: "nope" } });
+    const res = mockRes();
+    const next = mockNext();
+
+    await deleteSimulation(req, res, next);
+    await flush();
+
+    expect(simulationService.remove).not.toHaveBeenCalled();
+    expect((next as Mock).mock.calls[0]![0]).toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it("requires authentication", async () => {
+    const req = { params: { id: uuid } } as unknown as Request;
+    const res = mockRes();
+    const next = mockNext();
+
+    await deleteSimulation(req, res, next);
     await flush();
 
     expect((next as Mock).mock.calls[0]![0]).toMatchObject({ statusCode: 401 });

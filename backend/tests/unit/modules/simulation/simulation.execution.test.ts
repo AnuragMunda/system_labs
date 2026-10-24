@@ -56,6 +56,7 @@ const row: SimulationRow = {
   startedAt: null,
   completedAt: null,
   error: null,
+  savedAt: null,
   createdAt: new Date(),
 };
 

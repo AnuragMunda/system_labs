@@ -59,6 +59,7 @@ export interface SimulationDetails {
   startedAt: string | null;
   completedAt: string | null;
   error: string | null;
+  savedAt: string | null;
   createdAt: string;
 }
 
@@ -75,6 +76,7 @@ export interface SimulationStatusView {
 export interface SimulationSummary extends SimulationStatusView {
   architectureId: string;
   seed: number | null;
+  savedAt: string | null;
   createdAt: string;
 }
 
@@ -199,6 +201,7 @@ export interface CreateSimulationInput {
 export interface ListSimulationsParams {
   architectureId?: string;
   projectId?: string;
+  saved?: boolean;
   page?: number;
   limit?: number;
 }
@@ -219,6 +222,7 @@ export async function listSimulationsApi(
   if (params.architectureId)
     query.set("architectureId", params.architectureId);
   if (params.projectId) query.set("projectId", params.projectId);
+  if (params.saved !== undefined) query.set("saved", String(params.saved));
   query.set("page", String(params.page ?? 1));
   query.set("limit", String(params.limit ?? 100));
   return apiFetch<PaginatedSimulations>(
@@ -289,6 +293,24 @@ export async function cancelSimulationApi(
   return apiFetch<SimulationDetails>(
     `/api/v1/simulations/${encodeURIComponent(id)}/cancel`,
     { method: "POST" },
+  );
+}
+
+export async function saveSimulationApi(
+  id: string,
+): Promise<SimulationDetails> {
+  return apiFetch<SimulationDetails>(
+    `/api/v1/simulations/${encodeURIComponent(id)}/save`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteSimulationApi(
+  id: string,
+): Promise<SimulationDetails> {
+  return apiFetch<SimulationDetails>(
+    `/api/v1/simulations/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
   );
 }
 

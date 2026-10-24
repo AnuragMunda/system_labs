@@ -74,6 +74,12 @@ export const createSimulationSchema = z.object({
 export const listSimulationsQuerySchema = z.object({
   architectureId: z.uuid().optional(),
   projectId: z.uuid().optional(),
+  // Saved runs are the default view. Pass `saved=false` to list unsaved drafts
+  // (used by the editor to reattach to an in-flight run).
+  saved: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });

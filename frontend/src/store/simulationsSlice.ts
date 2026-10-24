@@ -3,11 +3,13 @@ import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import {
   cancelSimulationApi,
   createSimulationApi,
+  deleteSimulationApi,
   getSimulationMetricsApi,
   getSimulationResultsApi,
   getSimulationStatusApi,
   pauseSimulationApi,
   resumeSimulationApi,
+  saveSimulationApi,
   startSimulationApi,
   type CreateSimulationInput,
   type SimulationDetails,
@@ -24,6 +26,7 @@ export interface SimulationRunState {
   startedAt: string | null;
   completedAt: string | null;
   error: string | null;
+  savedAt: string | null;
   results: SimulationMetrics | null;
   liveMetrics: SimulationMetrics | null;
   pending: boolean;
@@ -59,6 +62,7 @@ function emptyRun(id: string, architectureId: string): SimulationRunState {
     startedAt: null,
     completedAt: null,
     error: null,
+    savedAt: null,
     results: null,
     liveMetrics: null,
     pending: false,
@@ -76,6 +80,7 @@ function fromDetails(details: SimulationDetails): SimulationRunState {
     startedAt: details.startedAt,
     completedAt: details.completedAt,
     error: details.error,
+    savedAt: details.savedAt,
     results: null,
     liveMetrics: null,
     pending: false,
@@ -158,6 +163,28 @@ export const cancelSimulation = createAsyncThunk(
   async (id: string, { rejectWithValue }) => {
     try {
       return await cancelSimulationApi(id);
+    } catch (error) {
+      return rejectWithValue(errorMessage(error));
+    }
+  },
+);
+
+export const saveSimulation = createAsyncThunk(
+  "simulations/save",
+  async (id: string, { rejectWithValue }) => {
+    try {
+      return await saveSimulationApi(id);
+    } catch (error) {
+      return rejectWithValue(errorMessage(error));
+    }
+  },
+);
+
+export const removeSimulation = createAsyncThunk(
+  "simulations/remove",
+  async (id: string, { rejectWithValue }) => {
+    try {
+      return await deleteSimulationApi(id);
     } catch (error) {
       return rejectWithValue(errorMessage(error));
     }
@@ -275,6 +302,38 @@ const simulationsSlice = createSlice({
         applyDetails(state, action.payload),
       )
       .addCase(cancelSimulation.rejected, (state, action) =>
+        failRunAction(
+          state,
+          action.meta.arg,
+          action.payload as string | undefined,
+        ),
+      )
+      .addCase(saveSimulation.pending, (state, action) =>
+        beginRunAction(state, action.meta.arg),
+      )
+      .addCase(saveSimulation.fulfilled, (state, action) =>
+        applyDetails(state, action.payload),
+      )
+      .addCase(saveSimulation.rejected, (state, action) =>
+        failRunAction(
+          state,
+          action.meta.arg,
+          action.payload as string | undefined,
+        ),
+      )
+      .addCase(removeSimulation.pending, (state, action) =>
+        beginRunAction(state, action.meta.arg),
+      )
+      .addCase(removeSimulation.fulfilled, (state, action) => {
+        const id = action.meta.arg;
+        delete state.runs[id];
+        for (const [architectureId, runId] of Object.entries(
+          state.latestByArchitecture,
+        )) {
+          if (runId === id) delete state.latestByArchitecture[architectureId];
+        }
+      })
+      .addCase(removeSimulation.rejected, (state, action) =>
         failRunAction(
           state,
           action.meta.arg,

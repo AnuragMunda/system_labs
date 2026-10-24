@@ -78,6 +78,7 @@ export interface SimulationDetails {
   startedAt: Date | null;
   completedAt: Date | null;
   error: string | null;
+  savedAt: Date | null;
   createdAt: Date;
 }
 
@@ -102,6 +103,7 @@ export interface SimulationStatusView {
 export interface SimulationSummary extends SimulationStatusView {
   architectureId: string;
   seed: number | null;
+  savedAt: Date | null;
   createdAt: Date;
 }
 

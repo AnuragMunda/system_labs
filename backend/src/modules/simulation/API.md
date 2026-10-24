@@ -122,6 +122,7 @@ Response `201` — `data` is `SimulationDetails`:
     "startedAt": null,
     "completedAt": null,
     "error": null,
+    "savedAt": null,
     "createdAt": "2026-10-14T12:00:00.000Z"
   }
 }
@@ -134,14 +135,16 @@ first.
 
 Query params (all optional; validated):
 
-| Param            | Type         | Default | Notes                       |
-| ---------------- | ------------ | ------- | --------------------------- |
-| `architectureId` | uuid         | —       | Filter to one architecture. |
-| `projectId`      | uuid         | —       | Filter to one project.      |
-| `page`           | int `>= 1`   | `1`     | 1-based page number.        |
-| `limit`          | int `1..100` | `20`    | Page size.                  |
+| Param            | Type            | Default | Notes                                                  |
+| ---------------- | --------------- | ------- | ------------------------------------------------------ |
+| `architectureId` | uuid            | —       | Filter to one architecture.                            |
+| `projectId`      | uuid            | —       | Filter to one project.                                 |
+| `saved`          | `true`\|`false` | `true`  | `true` lists saved runs; `false` lists unsaved drafts. |
+| `page`           | int `>= 1`      | `1`     | 1-based page number.                                   |
+| `limit`          | int `1..100`    | `20`    | Page size.                                             |
 
-Response `200` — `data` is `PaginatedResult<SimulationSummary>`. Items are
+Response `200` — `data` is `PaginatedResult<SimulationSummary>`. By default only
+saved runs are returned; pass `saved=false` to list unsaved drafts. Items are
 lightweight and **never** include `snapshot`, `config`, or `result`:
 
 ```json
@@ -160,6 +163,7 @@ lightweight and **never** include `snapshot`, `config`, or `result`:
         "startedAt": "2026-10-14T12:00:01.000Z",
         "completedAt": "2026-10-14T12:00:03.000Z",
         "error": null,
+        "savedAt": "2026-10-14T12:01:00.000Z",
         "createdAt": "2026-10-14T12:00:00.000Z"
       }
     ],
@@ -172,7 +176,7 @@ lightweight and **never** include `snapshot`, `config`, or `result`:
 
 Auth: **optional** (visibility-governed). Response `200` — `data` is
 `SimulationDetails` (same shape as create). Includes the captured `snapshot` and
-`config`.
+`config`; `savedAt` is `null` for an unsaved draft.
 
 ### `GET /api/v1/simulations/:id/status` — status (poll target)
 
@@ -299,9 +303,23 @@ Auth: **required**; owner. Response `200` — `data` is `SimulationDetails` with
 Auth: **required**; owner. Response `200` — `data` is `SimulationDetails` with
 `status: "cancelled"`. `409 CONFLICT` for terminal runs.
 
+### `POST /api/v1/simulations/:id/save` — save
+
+Auth: **required**; owner. Explicitly marks a run as saved and responds `200`
+with `SimulationDetails` whose `savedAt` is set. Saving is idempotent: calling it
+again keeps the original `savedAt`. Runs are unsaved drafts until this endpoint
+is called, so they do not appear in the default `GET /` list.
+
+### `DELETE /api/v1/simulations/:id` — remove
+
+Auth: **required**; owner. Permanently deletes the run and its report, responding
+`200` with the deleted `SimulationDetails`. `409 CONFLICT` when the run is
+`running` or `paused`; cancel it first. Unknown or hidden runs return
+`404 NOT_FOUND`; non-owners get `403 FORBIDDEN`.
+
 ## Authentication & visibility
 
-- **Writes** (create, start, pause, resume, cancel) and **list** require a valid
+- **Writes** (create, start, pause, resume, cancel, save, delete) and **list** require a valid
   Bearer token. Creating/controlling a run under a project the caller does not own
   → `403 FORBIDDEN`. `list`/`create` derive ownership from the token; client
   ownership ids are never trusted.
@@ -312,15 +330,15 @@ Auth: **required**; owner. Response `200` — `data` is `SimulationDetails` with
 
 ## Error contract
 
-| Status | `code`              | When                                                                                                                             |
-| ------ | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `BAD_REQUEST`       | Invalid body/query (`message: "Validation failed"` + `details`), invalid `:id`, missing source/failure node, malformed JSON.     |
-| 401    | `UNAUTHORIZED`      | Missing/invalid Bearer token.                                                                                                    |
-| 403    | `FORBIDDEN`         | Authenticated but not the owner (create/controls).                                                                               |
-| 404    | `NOT_FOUND`         | Unknown/hidden run, unknown architecture on create, results/metrics not yet available (or no report for a failed/cancelled run). |
-| 409    | `CONFLICT`          | Illegal lifecycle transition, a lost concurrent race, or metrics requested for a `created`/not-yet-registered run.               |
-| 413    | `PAYLOAD_TOO_LARGE` | Request body exceeds the limit.                                                                                                  |
-| 500    | `INTERNAL_ERROR`    | Unexpected server failure.                                                                                                       |
+| Status | `code`              | When                                                                                                                                                  |
+| ------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `BAD_REQUEST`       | Invalid body/query (`message: "Validation failed"` + `details`), invalid `:id`, missing source/failure node, malformed JSON.                          |
+| 401    | `UNAUTHORIZED`      | Missing/invalid Bearer token.                                                                                                                         |
+| 403    | `FORBIDDEN`         | Authenticated but not the owner (create/controls).                                                                                                    |
+| 404    | `NOT_FOUND`         | Unknown/hidden run, unknown architecture on create, results/metrics not yet available (or no report for a failed/cancelled run).                      |
+| 409    | `CONFLICT`          | Illegal lifecycle transition, a lost concurrent race, metrics requested for a `created`/not-yet-registered run, or deleting a `running`/`paused` run. |
+| 413    | `PAYLOAD_TOO_LARGE` | Request body exceeds the limit.                                                                                                                       |
+| 500    | `INTERNAL_ERROR`    | Unexpected server failure.                                                                                                                            |
 
 Validation failures include structured issues:
 

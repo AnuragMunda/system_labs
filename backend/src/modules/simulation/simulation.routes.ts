@@ -20,6 +20,7 @@ import { validate } from "@/middlewares/validate.js";
 import {
   cancelSimulation,
   createSimulation,
+  deleteSimulation,
   getSimulationById,
   getSimulationMetrics,
   getSimulationResults,
@@ -27,6 +28,7 @@ import {
   getSimulationStatus,
   pauseSimulation,
   resumeSimulation,
+  saveSimulation,
   startSimulation,
 } from "./simulation.controller.js";
 import { createSimulationSchema } from "./simulation.schema.js";
@@ -38,7 +40,10 @@ simulationRouter
   .get(authenticate, getSimulations)
   .post(authenticate, validate(createSimulationSchema), createSimulation);
 
-simulationRouter.route("/:id").get(authenticateOptional, getSimulationById);
+simulationRouter
+  .route("/:id")
+  .get(authenticateOptional, getSimulationById)
+  .delete(authenticate, deleteSimulation);
 
 simulationRouter
   .route("/:id/status")
@@ -59,5 +64,7 @@ simulationRouter.route("/:id/pause").post(authenticate, pauseSimulation);
 simulationRouter.route("/:id/resume").post(authenticate, resumeSimulation);
 
 simulationRouter.route("/:id/cancel").post(authenticate, cancelSimulation);
+
+simulationRouter.route("/:id/save").post(authenticate, saveSimulation);
 
 export default simulationRouter;

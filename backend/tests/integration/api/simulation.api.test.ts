@@ -90,6 +90,14 @@ function createSimulationAs(
     });
 }
 
+/** Explicitly saves a simulation through the API as the caller. */
+function saveSimulationAs(token: string, simulationId: string) {
+  return request(app)
+    .post(`/api/v1/simulations/${simulationId}/save`)
+    .set("Authorization", `Bearer ${token}`)
+    .expect(200);
+}
+
 /** Creates an owned architecture and returns its id and parent project. */
 async function ownedArchitecture() {
   const project = await createOwnerProject();
@@ -170,6 +178,7 @@ describeDb("Simulations API", () => {
         status: "created",
         seed: 0,
         currentTimeMs: 0,
+        savedAt: null,
       });
       expect(res.body.data.id).toEqual(expect.any(String));
       expect(res.body.data.createdAt).toBeDefined();
@@ -707,21 +716,24 @@ describeDb("Simulations API", () => {
         other.accessToken,
         otherProject.id,
       ).expect(201);
-      await createSimulationAs(
+      const otherSimulation = await createSimulationAs(
         other.accessToken,
         otherArchitecture.body.data.id,
       ).expect(201);
+      await saveSimulationAs(other.accessToken, otherSimulation.body.data.id);
 
       const { architectureId } = await ownedArchitecture();
       const first = await createSimulationAs(
         accessToken,
         architectureId,
       ).expect(201);
+      await saveSimulationAs(accessToken, first.body.data.id);
       await new Promise((resolve) => setTimeout(resolve, 15));
       const second = await createSimulationAs(
         accessToken,
         architectureId,
       ).expect(201);
+      await saveSimulationAs(accessToken, second.body.data.id);
 
       const res = await request(app)
         .get("/api/v1/simulations")
@@ -751,6 +763,7 @@ describeDb("Simulations API", () => {
           startedAt: null,
           completedAt: null,
           error: null,
+          savedAt: expect.any(String),
         });
         expect(typeof item.createdAt).toBe("string");
       }
@@ -758,18 +771,27 @@ describeDb("Simulations API", () => {
 
     it("filters by architectureId and projectId", async () => {
       const { project, architectureId } = await ownedArchitecture();
-      await createSimulationAs(accessToken, architectureId).expect(201);
-      await createSimulationAs(accessToken, architectureId).expect(201);
+      const first = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+      await saveSimulationAs(accessToken, first.body.data.id);
+      const second = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+      await saveSimulationAs(accessToken, second.body.data.id);
 
       const otherArchitecture = await createArchitectureAs(
         accessToken,
         project.id,
         { name: "Secondary" },
       ).expect(201);
-      await createSimulationAs(
+      const third = await createSimulationAs(
         accessToken,
         otherArchitecture.body.data.id,
       ).expect(201);
+      await saveSimulationAs(accessToken, third.body.data.id);
 
       const byArchitecture = await request(app)
         .get(`/api/v1/simulations?architectureId=${architectureId}`)
@@ -790,7 +812,11 @@ describeDb("Simulations API", () => {
     it("paginates with page and limit", async () => {
       const { architectureId } = await ownedArchitecture();
       for (let i = 0; i < 3; i += 1) {
-        await createSimulationAs(accessToken, architectureId).expect(201);
+        const created = await createSimulationAs(
+          accessToken,
+          architectureId,
+        ).expect(201);
+        await saveSimulationAs(accessToken, created.body.data.id);
       }
 
       const res = await request(app)
@@ -821,6 +847,126 @@ describeDb("Simulations API", () => {
 
       expect(res.status).toBe(401);
       expect(res.body).toMatchObject({ success: false, code: "UNAUTHORIZED" });
+    });
+  });
+
+  describe("saved draft lifecycle", () => {
+    it("lists saved runs by default and drafts with saved=false", async () => {
+      const { architectureId } = await ownedArchitecture();
+      const saved = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+      const draft = await createSimulationAs(
+        accessToken,
+        architectureId,
+      ).expect(201);
+
+      await saveSimulationAs(accessToken, saved.body.data.id);
+
+      const savedList = await request(app)
+        .get("/api/v1/simulations")
+        .set(...authHeader());
+      expect(savedList.status).toBe(200);
+      expect(savedList.body.data.pagination.total).toBe(1);
+      expect(savedList.body.data.items[0].id).toBe(saved.body.data.id);
+      expect(savedList.body.data.items[0].savedAt).toEqual(expect.any(String));
+
+      const draftList = await request(app)
+        .get("/api/v1/simulations?saved=false")
+        .set(...authHeader());
+      expect(draftList.status).toBe(200);
+      expect(draftList.body.data.pagination.total).toBe(1);
+      expect(draftList.body.data.items[0].id).toBe(draft.body.data.id);
+      expect(draftList.body.data.items[0].savedAt).toBeNull();
+    });
+
+    it("saves a draft and keeps the original timestamp on repeat", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const first = await saveSimulationAs(accessToken, simulation.id);
+      expect(first.body.data.savedAt).toEqual(expect.any(String));
+
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      const second = await saveSimulationAs(accessToken, simulation.id);
+
+      expect(second.body.data.savedAt).toBe(first.body.data.savedAt);
+    });
+
+    it("rejects saving a run owned by someone else with a 403", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .post(`/api/v1/simulations/${simulation.id}/save`)
+        .set("Authorization", `Bearer ${other.accessToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ success: false, code: "FORBIDDEN" });
+    });
+
+    it("returns 404 when saving an unknown run", async () => {
+      const res = await request(app)
+        .post("/api/v1/simulations/5b47bb24-2f9b-4e40-a1c5-4d2d5bce0f91/save")
+        .set(...authHeader());
+
+      expect(res.status).toBe(404);
+    });
+
+    it("requires authentication to save", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app).post(
+        `/api/v1/simulations/${simulation.id}/save`,
+      );
+
+      expect(res.status).toBe(401);
+    });
+
+    it("deletes an owned run and makes it unreadable", async () => {
+      const { simulation } = await ownedSimulation();
+      await saveSimulationAs(accessToken, simulation.id);
+
+      const deleted = await request(app)
+        .delete(`/api/v1/simulations/${simulation.id}`)
+        .set(...authHeader());
+
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.data).toMatchObject({ id: simulation.id });
+
+      const read = await request(app)
+        .get(`/api/v1/simulations/${simulation.id}`)
+        .set(...authHeader());
+      expect(read.status).toBe(404);
+    });
+
+    it("rejects deleting a run owned by someone else with a 403", async () => {
+      const other = await createAuthenticatedUser();
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app)
+        .delete(`/api/v1/simulations/${simulation.id}`)
+        .set("Authorization", `Bearer ${other.accessToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it("returns 400 for a non-uuid id on delete", async () => {
+      const res = await request(app)
+        .delete("/api/v1/simulations/not-a-uuid")
+        .set(...authHeader());
+
+      expect(res.status).toBe(400);
+    });
+
+    it("requires authentication to delete", async () => {
+      const { simulation } = await ownedSimulation();
+
+      const res = await request(app).delete(
+        `/api/v1/simulations/${simulation.id}`,
+      );
+
+      expect(res.status).toBe(401);
     });
   });
 

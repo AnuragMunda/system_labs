@@ -176,3 +176,25 @@ export const cancelSimulation = asyncHandler(
     return ApiResponse.ok(res, simulation, "Simulation cancelled successfully");
   },
 );
+
+/** POST /api/v1/simulations/:id/save — explicitly saves a simulation. */
+export const saveSimulation = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = requireUser(req);
+
+    const simulation = await simulationService.save(requireId(req), user.id);
+
+    return ApiResponse.ok(res, simulation, "Simulation saved successfully");
+  },
+);
+
+/** DELETE /api/v1/simulations/:id — permanently removes a simulation. */
+export const deleteSimulation = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = requireUser(req);
+
+    const simulation = await simulationService.remove(requireId(req), user.id);
+
+    return ApiResponse.ok(res, simulation, "Simulation deleted successfully");
+  },
+);

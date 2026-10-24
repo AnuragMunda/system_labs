@@ -85,6 +85,7 @@ const row: SimulationRow = {
   startedAt: null,
   completedAt: null,
   error: null,
+  savedAt: null,
   createdAt: new Date(),
 };
 
@@ -93,6 +94,8 @@ const repo = {
   findById: vi.fn(),
   findPaginated: vi.fn(),
   count: vi.fn(),
+  markSaved: vi.fn(),
+  delete: vi.fn(),
 } as unknown as SimulationRepository;
 
 const archRepo = { findById: vi.fn() } as unknown as ArchitectureRepository;
@@ -149,6 +152,7 @@ describe("SimulationService.create", () => {
       startedAt: null,
       completedAt: null,
       error: null,
+      savedAt: null,
       createdAt: row.createdAt,
     });
   });
@@ -263,6 +267,7 @@ describe("SimulationService.findById", () => {
       startedAt: null,
       completedAt: null,
       error: null,
+      savedAt: null,
       createdAt: row.createdAt,
     });
     expect("result" in result).toBe(false);
@@ -438,6 +443,7 @@ describe("SimulationService.getPaginated", () => {
     vi.mocked(repo.count).mockResolvedValue(1);
 
     const result = await service.getPaginated(ownerId, {
+      saved: true,
       page: 1,
       limit: 20,
     });
@@ -446,6 +452,7 @@ describe("SimulationService.getPaginated", () => {
       ownerId,
       architectureId: undefined,
       projectId: undefined,
+      saved: true,
       page: 1,
       limit: 20,
     });
@@ -453,6 +460,7 @@ describe("SimulationService.getPaginated", () => {
       ownerId,
       architectureId: undefined,
       projectId: undefined,
+      saved: true,
     });
     expect(result.pagination).toEqual({
       page: 1,
@@ -471,6 +479,7 @@ describe("SimulationService.getPaginated", () => {
         startedAt: null,
         completedAt: null,
         error: null,
+        savedAt: null,
         createdAt: row.createdAt,
       },
     ]);
@@ -485,6 +494,7 @@ describe("SimulationService.getPaginated", () => {
     const result = await service.getPaginated(ownerId, {
       architectureId,
       projectId,
+      saved: false,
       page: 3,
       limit: 20,
     });
@@ -493,6 +503,7 @@ describe("SimulationService.getPaginated", () => {
       ownerId,
       architectureId,
       projectId,
+      saved: false,
       page: 3,
       limit: 20,
     });
@@ -506,7 +517,11 @@ describe("SimulationService.getPaginated", () => {
     ]);
     vi.mocked(repo.count).mockResolvedValue(1);
 
-    const result = await service.getPaginated(ownerId, { page: 1, limit: 20 });
+    const result = await service.getPaginated(ownerId, {
+      saved: true,
+      page: 1,
+      limit: 20,
+    });
 
     expect(result.items[0]?.durationMs).toBeNull();
   });
@@ -698,6 +713,112 @@ describe("SimulationService control actions", () => {
 
     await expect(service.pause(simId, ownerId)).rejects.toMatchObject({
       statusCode: 409,
+    });
+  });
+});
+
+describe("SimulationService.save", () => {
+  it("marks an owned draft as saved and returns its details", async () => {
+    const savedAt = new Date("2026-01-02T00:00:00Z");
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+    vi.mocked(repo.markSaved).mockResolvedValue({ ...row, savedAt });
+
+    const result = await service.save(simId, ownerId);
+
+    expect(repo.markSaved).toHaveBeenCalledWith(simId, expect.any(Date));
+    expect(result.savedAt).toBe(savedAt);
+  });
+
+  it("rejects saving a run owned by someone else with a 403", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+
+    await expect(service.save(simId, otherUserId)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect(repo.markSaved).not.toHaveBeenCalled();
+  });
+
+  it("throws NotFoundError when the run disappears during save", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+    vi.mocked(repo.markSaved).mockResolvedValue(null);
+
+    await expect(service.save(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+});
+
+describe("SimulationService.remove", () => {
+  it("deletes a terminal owned run and returns its details", async () => {
+    const completed = { ...row, status: "completed" as const };
+    vi.mocked(repo.findById).mockResolvedValue(completed);
+    stubsOwned();
+    vi.mocked(repo.delete).mockResolvedValue(completed);
+
+    const result = await service.remove(simId, ownerId);
+
+    expect(repo.delete).toHaveBeenCalledWith(simId);
+    expect(result).toMatchObject({ id: simId, status: "completed" });
+  });
+
+  it("refuses to remove a running run with a 409", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      status: "running",
+    });
+    stubsOwned();
+
+    await expect(service.remove(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it("refuses to remove a paused run with a 409", async () => {
+    vi.mocked(repo.findById).mockResolvedValue({
+      ...row,
+      status: "paused",
+    });
+    stubsOwned();
+
+    await expect(service.remove(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it("rejects removing a run owned by someone else with a 403", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+
+    await expect(service.remove(simId, otherUserId)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it("maps a start/delete race to a 409 instead of deleting the run", async () => {
+    vi.mocked(repo.findById)
+      .mockResolvedValueOnce(row)
+      .mockResolvedValueOnce({ ...row, status: "running" });
+    stubsOwned();
+    vi.mocked(repo.delete).mockResolvedValue(null);
+
+    await expect(service.remove(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it("throws NotFoundError when the run disappears during delete", async () => {
+    vi.mocked(repo.findById).mockResolvedValue(row);
+    stubsOwned();
+    vi.mocked(repo.delete).mockResolvedValue(null);
+
+    await expect(service.remove(simId, ownerId)).rejects.toMatchObject({
+      statusCode: 404,
     });
   });
 });

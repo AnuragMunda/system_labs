@@ -176,17 +176,23 @@ export class SimulationService {
     userId: string,
     query: ListSimulationsQueryDto,
   ): Promise<PaginatedResult<SimulationSummary>> {
-    const { architectureId, projectId, page, limit } = query;
+    const { architectureId, projectId, saved, page, limit } = query;
 
     const [items, total] = await Promise.all([
       this.repository.findPaginated({
         ownerId: userId,
         architectureId,
         projectId,
+        saved,
         page,
         limit,
       }),
-      this.repository.count({ ownerId: userId, architectureId, projectId }),
+      this.repository.count({
+        ownerId: userId,
+        architectureId,
+        projectId,
+        saved,
+      }),
     ]);
 
     return {
@@ -249,6 +255,59 @@ export class SimulationService {
   /** Cancels a created, running, or paused simulation the caller owns. */
   async cancel(id: string, userId: string): Promise<SimulationDetails> {
     return this.control(id, userId, "cancel");
+  }
+
+  /**
+   * Explicitly saves a run the caller owns. Saving is idempotent, so a run that
+   * is already saved keeps its original timestamp.
+   */
+  async save(id: string, userId: string): Promise<SimulationDetails> {
+    const simulation = await this.repository.findById(id);
+
+    await this.assertOwnerForSimulation(simulation, userId);
+
+    const saved = await this.repository.markSaved(id, new Date());
+
+    if (!saved) {
+      throw NotFoundError();
+    }
+
+    return this.toDetails(saved);
+  }
+
+  /**
+   * Permanently removes a run the caller owns. Active runs must be cancelled
+   * first so execution can never continue against a deleted row.
+   */
+  async remove(id: string, userId: string): Promise<SimulationDetails> {
+    const simulation = await this.repository.findById(id);
+
+    await this.assertOwnerForSimulation(simulation, userId);
+
+    if (simulation.status === "running" || simulation.status === "paused") {
+      throw ConflictError(
+        "Simulation must be cancelled before it can be removed.",
+      );
+    }
+
+    const deleted = await this.repository.delete(id);
+
+    if (!deleted) {
+      const current = await this.repository.findById(id);
+
+      if (
+        current &&
+        (current.status === "running" || current.status === "paused")
+      ) {
+        throw ConflictError(
+          "Simulation must be cancelled before it can be removed.",
+        );
+      }
+
+      throw NotFoundError();
+    }
+
+    return this.toDetails(deleted);
   }
 
   /**
@@ -351,6 +410,7 @@ export class SimulationService {
       startedAt: row.startedAt,
       completedAt: row.completedAt,
       error: row.error,
+      savedAt: row.savedAt,
       createdAt: row.createdAt,
     };
   }
@@ -367,6 +427,7 @@ export class SimulationService {
       startedAt: row.startedAt,
       completedAt: row.completedAt,
       error: row.error,
+      savedAt: row.savedAt,
       createdAt: row.createdAt,
     };
   }

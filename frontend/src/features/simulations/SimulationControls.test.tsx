@@ -18,6 +18,7 @@ function makeRun(
     startedAt: null,
     completedAt: null,
     error: null,
+    savedAt: null,
     results: null,
     liveMetrics: null,
     pending: false,

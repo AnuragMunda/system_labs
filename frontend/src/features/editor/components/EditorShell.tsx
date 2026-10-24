@@ -39,7 +39,7 @@ import { ComponentPalette } from "./ComponentPalette";
 import { Canvas } from "./Canvas";
 import { Inspector } from "./Inspector";
 import { AIPanel } from "./AIPanel";
-import { TelemetryBar } from "./TelemetryBar";
+import { TelemetryDrawer } from "./TelemetryBar";
 import type { BackendArchitecture } from "@/lib/api/architectures";
 
 export function EditorShell({
@@ -84,9 +84,12 @@ export function EditorShell({
       try {
         const page = await listSimulationsApi({
           architectureId: architecture.id,
+          saved: false,
           limit: 10,
         });
-        const active = page.items.find((item) => isActiveStatus(item.status));
+        const active =
+          page.items.find((item) => isActiveStatus(item.status)) ??
+          page.items.find((item) => item.status === "completed");
         if (!cancelled && active) setActiveId(active.id);
       } catch {
         // Unauthenticated or none yet; the editor starts idle.
@@ -170,6 +173,11 @@ export function EditorShell({
     if (activeId) dispatch(cancelSimulation(activeId));
   }, [activeId, dispatch]);
 
+  const handleRemoved = useCallback(() => {
+    setActiveId(null);
+    toast("Simulation removed");
+  }, []);
+
   const handleRun = useCallback(
     async (input: { sourceNodeId: string; config: SimulationConfig }) => {
       try {
@@ -224,7 +232,7 @@ export function EditorShell({
           />
           <AIPanel />
         </div>
-        <TelemetryBar run={run} />
+        <TelemetryDrawer run={run} onRemoved={handleRemoved} />
       </div>
 
       <SimulationConfigDialog

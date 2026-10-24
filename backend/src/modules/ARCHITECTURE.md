@@ -234,10 +234,13 @@ actions with a 409 instead of duplicating transition rules.
 completes in the background and persists the final status plus the aggregate
 `SimulationMetrics` into `simulations.result`. Engine failures after the 202 are
 surfaced through `/status` and `/results`, not as an HTTP 5xx. Endpoints: list,
-create, details, status, results, start, pause, resume, cancel (mounted at
-`/api/v1/simulations`). `GET /` returns an owner-scoped, newest-first,
-paginated set of lightweight `SimulationSummary` rows (no snapshot/config/
-report), optionally filtered by `architectureId`/`projectId`. `/status` includes
+create, details, status, results, start, pause, resume, cancel, save, delete
+(mounted at `/api/v1/simulations`). Every run is persisted as an unsaved draft
+(`savedAt = null`). `POST /:id/save` explicitly marks a run saved (idempotent),
+and `DELETE /:id` permanently removes a terminal run. `GET /` returns an
+owner-scoped, newest-first, paginated set of lightweight `SimulationSummary`
+rows (no snapshot/config/report), saved runs by default or drafts with
+`saved=false`, optionally filtered by `architectureId`/`projectId`. `/status` includes
 `durationMs` alongside `currentTimeMs` so clients can render progress. The
 frontend-facing request/response/error contract is documented in
 [`simulation/API.md`](./simulation/API.md).
@@ -575,6 +578,12 @@ connection is created in `src/infrastructure/database/db.ts` from the
 `DATABASE_URL` env var and reused by every repository. Migrations are generated
 with Drizzle Kit into `backend/drizzle/` (see `drizzle.config.ts`); the
 `schema/migrations/` directory is intentionally unused for now.
+
+**Workflow:** Use `db:push` only for disposable local databases, and `db:migrate`
+for databases whose migration history must be preserved. Do not mix them on the
+same database. If a push-managed database must switch to migrations, baseline its
+existing migration names in `drizzle.__drizzle_migrations` before running
+`db:migrate`.
 
 ```text
 users

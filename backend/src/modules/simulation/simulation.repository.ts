@@ -11,7 +11,16 @@
  * two concurrent starts, or a cancel racing a completion) can never both win.
  */
 
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  notInArray,
+} from "drizzle-orm";
 
 import db from "@/infrastructure/database/db.js";
 import { architecturesTable } from "@/infrastructure/database/schema/architectures.js";
@@ -87,6 +96,7 @@ export class SimulationRepository {
     ownerId: string;
     architectureId?: string;
     projectId?: string;
+    saved: boolean;
     page: number;
     limit: number;
   }): Promise<SimulationRow[]> {
@@ -106,6 +116,7 @@ export class SimulationRepository {
     ownerId: string;
     architectureId?: string;
     projectId?: string;
+    saved: boolean;
   }): Promise<number> {
     const [result] = await db
       .select({ count: count() })
@@ -120,12 +131,16 @@ export class SimulationRepository {
     ownerId: string;
     architectureId?: string;
     projectId?: string;
+    saved: boolean;
   }) {
     return and(
       inArray(
         simulationsTable.architectureId,
         this.ownedArchitectures(filters.ownerId),
       ),
+      filters.saved
+        ? isNotNull(simulationsTable.savedAt)
+        : isNull(simulationsTable.savedAt),
       filters.architectureId
         ? eq(simulationsTable.architectureId, filters.architectureId)
         : undefined,
@@ -181,6 +196,58 @@ export class SimulationRepository {
           and(
             eq(simulationsTable.id, id),
             inArray(simulationsTable.status, from),
+          ),
+        )
+        .returning();
+
+      return simulation ?? null;
+    } catch (error) {
+      throw mapDbError(error);
+    }
+  }
+
+  /**
+   * Marks a simulation as saved without overwriting an existing saved timestamp.
+   * Idempotent: saving an already-saved run returns the unchanged row.
+   */
+  async markSaved(id: string, savedAt: Date): Promise<SimulationRow | null> {
+    try {
+      const [simulation] = await db
+        .update(simulationsTable)
+        .set({ savedAt })
+        .where(
+          and(eq(simulationsTable.id, id), isNull(simulationsTable.savedAt)),
+        )
+        .returning();
+
+      if (simulation) {
+        return simulation;
+      }
+
+      const [existing] = await db
+        .select()
+        .from(simulationsTable)
+        .where(eq(simulationsTable.id, id));
+
+      return existing ?? null;
+    } catch (error) {
+      throw mapDbError(error);
+    }
+  }
+
+  /**
+   * Deletes a non-active simulation row and returns it. The status guard is part
+   * of the DELETE so a concurrent start cannot race a removal into deleting a
+   * running/paused row. Returns `null` if the row is absent or active.
+   */
+  async delete(id: string): Promise<SimulationRow | null> {
+    try {
+      const [simulation] = await db
+        .delete(simulationsTable)
+        .where(
+          and(
+            eq(simulationsTable.id, id),
+            notInArray(simulationsTable.status, ["running", "paused"]),
           ),
         )
         .returning();

@@ -6,6 +6,8 @@ import reducer, {
   fetchSimulationMetrics,
   fetchSimulationResults,
   refreshSimulationStatus,
+  removeSimulation,
+  saveSimulation,
   startSimulation,
 } from "./simulationsSlice";
 import type {
@@ -31,6 +33,7 @@ function makeDetails(
     startedAt: null,
     completedAt: null,
     error: null,
+    savedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
@@ -297,5 +300,98 @@ describe("fetchSimulationResults", () => {
     );
     expect(withResults.runs["sim-1"].status).toBe("completed");
     expect(withResults.runs["sim-1"].results?.requests.completed).toBe(95);
+  });
+});
+
+describe("saveSimulation lifecycle", () => {
+  it("marks pending then stores the saved timestamp", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(
+        makeDetails({ status: "completed" }),
+        "req1",
+        INPUT,
+      ),
+    );
+
+    const pending = reducer(seeded, saveSimulation.pending("req2", "sim-1"));
+    expect(pending.runs["sim-1"].pending).toBe(true);
+
+    const fulfilled = reducer(
+      pending,
+      saveSimulation.fulfilled(
+        makeDetails({
+          status: "completed",
+          savedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        "req2",
+        "sim-1",
+      ),
+    );
+    expect(fulfilled.runs["sim-1"].pending).toBe(false);
+    expect(fulfilled.runs["sim-1"].savedAt).toBe(
+      "2026-01-02T00:00:00.000Z",
+    );
+  });
+
+  it("records an action error when saving is rejected", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(makeDetails(), "req1", INPUT),
+    );
+    const rejected = reducer(
+      seeded,
+      saveSimulation.rejected(
+        new Error("x"),
+        "req2",
+        "sim-1",
+        "Only completed runs can be saved",
+      ),
+    );
+    expect(rejected.runs["sim-1"].pending).toBe(false);
+    expect(rejected.runs["sim-1"].actionError).toBe(
+      "Only completed runs can be saved",
+    );
+  });
+});
+
+describe("removeSimulation lifecycle", () => {
+  it("deletes the run and its latest mapping", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(makeDetails(), "req1", INPUT),
+    );
+    const fulfilled = reducer(
+      seeded,
+      removeSimulation.fulfilled(
+        makeDetails({ status: "completed" }),
+        "req2",
+        "sim-1",
+      ),
+    );
+
+    expect(fulfilled.runs["sim-1"]).toBeUndefined();
+    expect(fulfilled.latestByArchitecture["arch-1"]).toBeUndefined();
+  });
+
+  it("records an action error and keeps the run when removal fails", () => {
+    const seeded = reducer(
+      INITIAL,
+      createSimulation.fulfilled(makeDetails(), "req1", INPUT),
+    );
+    const rejected = reducer(
+      seeded,
+      removeSimulation.rejected(
+        new Error("x"),
+        "req2",
+        "sim-1",
+        "Cannot remove a running simulation",
+      ),
+    );
+
+    expect(rejected.runs["sim-1"]).toBeDefined();
+    expect(rejected.runs["sim-1"].actionError).toBe(
+      "Cannot remove a running simulation",
+    );
   });
 });
